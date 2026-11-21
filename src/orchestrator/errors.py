@@ -97,6 +97,13 @@ class NoMatchingToolError(PlanError):
     code = "no_matching_tool"
 
 
+class PlannerUnavailableError(PlanError):
+    """The planning backend (e.g. the LLM API) is temporarily unreachable or rate-limited."""
+
+    code = "planner_unavailable"
+    recoverable = True
+
+
 # --- Authorization ----------------------------------------------------------------------
 
 

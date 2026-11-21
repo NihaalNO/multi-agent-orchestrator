@@ -12,6 +12,7 @@ dependencies = [
     "jsonschema>=4.22",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "anthropic>=2.12",
 ]
 
 [project.optional-dependencies]

@@ -7,7 +7,17 @@ from orchestrator.contracts.permissions import (
     PermissionPolicy,
     Principal,
 )
-from orchestrator.contracts.plan import ExecutionPlan, InputRef, TaskSpec, find_refs
+from orchestrator.contracts.plan import (
+    ExecutionPlan,
+    InputRef,
+    PlanningRequest,
+    PlanProposal,
+    RoutedPlan,
+    RoutingDecision,
+    TaskSpec,
+    UnroutedTask,
+    find_refs,
+)
 from orchestrator.contracts.results import (
     Conflict,
     ConflictKind,
@@ -48,7 +58,12 @@ __all__ = [
     "PermissionDecision",
     "PermissionGrant",
     "PermissionPolicy",
+    "PlanProposal",
+    "PlanningRequest",
     "Principal",
+    "RoutedPlan",
+    "RoutingDecision",
+    "UnroutedTask",
     "TaskResult",
     "TaskSpec",
     "TaskStatus",

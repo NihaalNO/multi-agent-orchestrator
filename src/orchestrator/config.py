@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
@@ -34,9 +34,11 @@ class Settings(BaseModel):
     file_tool_root: Path = Path("data/uploads")
     python_exec_timeout_s: float = Field(default=10.0, gt=0, le=120)
 
-    # LLM (Phase 03) — provider is an open decision; nothing here is required yet.
-    llm_provider: str | None = None
-    llm_model: str | None = None
+    # Planner. "anthropic" uses Claude; "rule_based" is the deterministic offline planner.
+    llm_provider: str = "anthropic"
+    llm_model: str = "claude-opus-5-5"
+    llm_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    # Optional: if unset, the Anthropic SDK resolves ANTHROPIC_API_KEY / auth profiles itself.
     llm_api_key: SecretStr | None = None
 
     # Admin API stopgap until principal-based auth (Phase 04). Unset → admin endpoints disabled.

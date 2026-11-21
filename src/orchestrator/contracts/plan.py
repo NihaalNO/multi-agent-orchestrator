@@ -129,6 +129,16 @@ class ExecutionPlan(BaseModel):
                 deps.difference_update(ready)
         return layers
 
+    def without(self, task_ids: set[str]) -> "ExecutionPlan | None":
+        """A copy without the given tasks and everything depending on them (None if empty)."""
+        drop = set(task_ids)
+        for tid in task_ids:
+            drop |= self.dependents(tid)
+        kept = tuple(t for t in self.tasks if t.task_id not in drop)
+        if not kept:
+            return None
+        return self.model_copy(update={"tasks": kept})
+
     def dependents(self, task_id: str) -> set[str]:
         """All tasks that transitively depend on ``task_id``."""
         out: set[str] = set()
@@ -140,3 +150,66 @@ class ExecutionPlan(BaseModel):
                     out.add(t.task_id)
                     frontier.append(t.task_id)
         return out
+
+
+# --- Planning & routing -------------------------------------------------------------------
+
+
+class PlanningRequest(BaseModel):
+    """What a planner receives. ``text`` is user content and must be treated as untrusted."""
+
+    model_config = ConfigDict(frozen=True)
+
+    request_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    text: str = Field(min_length=1, max_length=20_000)
+    files: tuple[str, ...] = Field(default=(), description="Uploaded file paths the request may refer to.")
+
+
+class PlanProposal(BaseModel):
+    """A planner's output. Untrusted until the router has validated and bound it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    request_id: str
+    plan: ExecutionPlan | None
+    unsupported: tuple[str, ...] = Field(
+        default=(), description="Parts of the request the planner found no capability for."
+    )
+    rationale: str = ""
+    planner: str
+
+
+class RoutingDecision(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str
+    capability: str
+    tool_id: str
+    operation: str
+    rationale: str
+    proposed: str | None = Field(default=None, description="Planner's proposed 'tool.operation', if any.")
+    proposal_rejected: str | None = Field(default=None, description="Why the proposal was overridden.")
+    alternatives: tuple[str, ...] = ()
+
+
+class UnroutedTask(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str
+    capability: str
+    reason: str
+
+
+class RoutedPlan(BaseModel):
+    """A plan whose every task is bound to a registered, available tool operation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    plan: ExecutionPlan | None
+    decisions: tuple[RoutingDecision, ...] = ()
+    unrouted: tuple[UnroutedTask, ...] = ()
+    unsupported: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return self.plan is not None and not self.unrouted and not self.unsupported

@@ -31,14 +31,20 @@ spec §13.12. Update it in the same commit as the work it describes.
 | Input / output schema validation | ✅ | `validate_input`, `validate_output` |
 | Registry consistency under concurrency | ✅ | lock-serialised writes, copy-on-write snapshots |
 
-## Phase 03 — Intelligent Routing  ⬜
+## Phase 03 — Intelligent Routing  🟡
 
-- ⬜ Initial adapters: Web Search, Python Execution, File Processing
-- ⬜ `Planner` protocol + `RuleBasedPlanner` (deterministic, test-friendly)
-- ⬜ `LLMPlanner` — **needs decision: LLM provider + API key**
-- ⬜ `CapabilityRouter`: candidate scoring (availability, reliability, cost, latency)
-- ⬜ Plan validation: re-verify every LLM-proposed binding against the registry
-- ⬜ "No matching tool" handling (test scenario 3)
+| Item | Status | Where |
+|---|---|---|
+| File Processing adapter (sandboxed root, traversal/symlink protection, size cap) | ✅ | `tools/file_processing.py` |
+| Python Execution adapter (separate `python -I` process, timeout, no inherited env) | ✅ | `tools/python_exec.py` — not a security sandbox, see ARCHITECTURE §5 |
+| Web Search adapter + `SearchBackend` interface + static backend | ✅ | `tools/web_search.py` |
+| Live web search backend | ⛔ | blocked on decision: which search provider (ARCHITECTURE §6) |
+| `Planner` protocol, `ToolCatalog`, `RuleBasedPlanner` | ✅ | `routing/planner.py` |
+| `AnthropicPlanner` (Claude Opus 5.5, structured outputs, refusal fallbacks, error mapping) | ✅ | `routing/anthropic_planner.py` — tested with a fake client only; **no live API call made yet** |
+| `CapabilityRouter`: deterministic ranking, proposal re-verification, static input validation | ✅ | `routing/router.py` |
+| "No matching tool" handling, incl. partial routing | ✅ | `NoMatchingToolError`, `allow_partial` |
+| Permission-aware candidate filtering | 🟡 | hook (`candidate_filter`) in place; policy arrives in Phase 04 |
+| Cost/latency-weighted scoring beyond lexicographic ranking | ⬜ | deferred until real cost/latency data exists (spec §11) |
 
 ## Phase 04 — Permission Management  ⬜
 
@@ -81,8 +87,8 @@ spec §13.12. Update it in the same commit as the work it describes.
 | # | Scenario | Status |
 |---|---|---|
 | 1 | Register a new tool while running | ✅ `tests/test_registry.py`, `tests/test_api.py` |
-| 2 | Request requiring multiple tools | ⬜ Phase 07 |
-| 3 | Request with no matching tool | ⬜ Phase 03 |
+| 2 | Request requiring multiple tools | 🟡 planned + routed to 3 tools (`test_planners.py`); execution in Phase 05/07 |
+| 3 | Request with no matching tool | ✅ `tests/test_router.py`, `tests/test_planners.py` |
 | 4 | Unauthorized write operation | ⬜ Phase 04 |
 | 5 | Three independent tasks concurrently | ⬜ Phase 05 |
 | 6 | Sequential dependencies | 🟡 ordering logic tested (`ExecutionPlan.layers`); execution in Phase 05 |

@@ -10,8 +10,21 @@ deterministic Python validates, authorizes and executes them.
 
 ## Status
 
-Phases 01 (foundation) and 02 (dynamic tool registry) are complete. See the roadmap for what
+Phases 01 (foundation) and 02 (dynamic tool registry) are complete; Phase 03 (planning and
+capability routing) is complete apart from a live web-search backend. See the roadmap for what
 is next and which decisions are still open.
+
+## Planner configuration
+
+The planner uses Claude (`claude-opus-5-5`) through the official `anthropic` SDK. Credentials
+are resolved by the SDK (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login`
+profile); `ORCH_LLM_API_KEY` overrides them.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORCH_LLM_PROVIDER` | `anthropic` | `anthropic` or `rule_based` (offline, deterministic) |
+| `ORCH_LLM_MODEL` | `claude-opus-5-5` | Claude model ID |
+| `ORCH_LLM_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` |
 
 ## Setup
 

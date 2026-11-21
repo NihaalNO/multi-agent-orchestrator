@@ -178,7 +178,7 @@ infinite or pointless retry loops (spec §6.1).
 |---|---|
 | 1 Request intake | API layer → `OrchestratorRequest` |
 | 2 Intent analysis, 3 Decomposition | `Planner.plan()` (LLM or rule-based) |
-| 4 Capability discovery, 5 Tool selection | `CapabilityRouter.bind()` |
+| 4 Capability discovery, 5 Tool selection | `CapabilityRouter.route()` (via `RoutingService.plan_and_route()`) |
 | 6 Permission validation | `PermissionPolicy.check()` at plan time **and** before each invoke |
 | 7 Execution planning | `ExecutionPlan.layers()` |
 | 8 Tool execution | `DagScheduler` → `ExecutionEngine.run_task()` |
@@ -195,7 +195,11 @@ infinite or pointless retry loops (spec §6.1).
 | Orchestration framework | Plain `asyncio` DAG scheduler, **no LangGraph** for the MVP | Spec §4 and §13.7 favour the simplest thing that works. Our graph is a static DAG built per request; LangGraph's value (cyclic agent loops, checkpointing) isn't needed yet. Revisit if we add iterative re-planning. |
 | Schema format | JSON Schema, validated with `jsonschema` | Works for in-process, HTTP and MCP tools alike (MCP tools already publish JSON Schema). Pydantic models can emit it via `model_json_schema()`. |
 | Persistence | In-memory registry, copy-on-write snapshots | Spec says add PostgreSQL/Redis only when required. Readers always see a consistent snapshot. |
-| LLM provider | Behind a `Planner` protocol; deterministic `RuleBasedPlanner` first | Lets every non-LLM part be tested without network or keys. Provider choice is an open question (below). |
+| LLM provider | **Anthropic, `claude-opus-5-5`**, behind the `Planner` protocol; `RuleBasedPlanner` as offline alternative (`ORCH_LLM_PROVIDER=rule_based`) | Every non-LLM part stays testable without network or keys. |
+| Planner output format | Structured outputs (`output_config.format` JSON Schema); task inputs as a JSON *string* | The reply is guaranteed to parse; inputs vary per tool, so they are validated against the real operation schema by the router instead of in the LLM schema. |
+| Planner refusals | Server-side refusal fallbacks enabled (`fallbacks="default"`, beta `server-side-fallback-2026-07-01`) | A safety-classifier decline is retried on a fallback model in the same call; a final refusal becomes a `PlanError`. |
+| Planner effort | `medium` (configurable via `ORCH_LLM_EFFORT`) | Opus 5.5's default; planning is short structured output. Raise if plan quality needs it. |
+| Untrusted plan handling | Router re-verifies every proposed binding; invalid ones are overridden with a recorded reason | A hallucinated or injected tool name can never be executed; the audit log shows the override. |
 | Admin API auth | Admin endpoints need `ORCH_ADMIN_TOKEN`; disabled if unset | Default-deny until full auth lands in Phase 04. |
 | Python sandbox | Separate subprocess (`python -I`), timeout, temp working dir, no inherited env | Honest limitation: a subprocess is **not** a security sandbox. Container isolation (Docker) is the planned upgrade; the `isolation` field already models it. |
 
@@ -203,9 +207,10 @@ infinite or pointless retry loops (spec §6.1).
 
 ## 6. Open questions (need a decision before the phase that uses them)
 
-1. **LLM provider** (Phase 03): Groq, Gemini, OpenAI or Anthropic? Needs an API key in env.
-2. **Web search backend** (Phase 03): a keyed API (Tavily, Brave, SerpAPI) or a keyless
-   scraper? Tests use a fixture backend regardless.
+1. ~~LLM provider~~ — decided: Anthropic (Claude Opus 5.5).
+2. **Web search backend**: a keyed API (Tavily, Brave, SerpAPI), or Anthropic's server-side
+   web search tool (same API key as the planner, billed per search)? Tests use the static
+   backend regardless; adding one is a single `SearchBackend` class.
 3. **Python isolation strength** (Phase 05): is subprocess-level isolation acceptable for
    the MVP, or is Docker available on the target machine?
 
