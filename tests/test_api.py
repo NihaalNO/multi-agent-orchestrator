@@ -101,3 +101,43 @@ def test_approval_endpoints(client, approvals):
 def test_no_principals_configured_means_nobody_gets_in(registry):
     with TestClient(create_app(settings=Settings(), registry=registry)) as c:
         assert c.get("/tools", headers=auth("root")).status_code == 401
+
+
+# --- Chat UI -----------------------------------------------------------------------------------
+
+
+def test_root_redirects_to_chat_ui(client):
+    res = client.get("/", follow_redirects=False)
+    assert res.status_code == 307 and res.headers["location"] == "/ui"
+
+
+@pytest.mark.parametrize("path,ctype", [("/ui", "text/html"), ("/ui/chat.js", "text/javascript"), ("/ui/chat.css", "text/css")])
+def test_chat_ui_is_served_without_a_key_and_locked_down(client, path, ctype):
+    res = client.get(path)
+    assert res.status_code == 200 and res.headers["content-type"].startswith(ctype)
+    csp = res.headers["content-security-policy"]
+    assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp and "unsafe-inline" not in csp
+    assert res.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize("name", ["../app.py", "app.py", "chat.html", "missing.js"])
+def test_only_the_chat_files_are_served(client, name):
+    assert client.get(f"/ui/{name}").status_code == 404
+
+
+def test_chat_ui_renders_server_text_safely():
+    from pathlib import Path
+
+    import orchestrator.api.app as app_module
+
+    js = (Path(app_module.__file__).parent / "static" / "chat.js").read_text(encoding="utf-8")
+    assert "innerHTML" not in js and "insertAdjacentHTML" not in js and "eval(" not in js
+    assert "localStorage" not in js  # the key lives only for the tab (sessionStorage)
+
+
+def test_chat_ui_is_packaged():
+    import tomllib
+    from pathlib import Path
+
+    data = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    assert data["tool"]["setuptools"]["package-data"]["orchestrator.api"] == ["static/*"]
