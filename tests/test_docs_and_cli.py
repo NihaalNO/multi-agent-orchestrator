@@ -98,9 +98,12 @@ def test_check_config_flags_common_mistakes(tmp_path):
 
 
 def test_check_config_with_example_files(tmp_path):
+    from orchestrator.receipts import generate_key
+
+    generate_key(tmp_path / "receipt-key.pem")
     settings = Settings(policy_path=ROOT / "config/policy.example.json",
                         principals_path=ROOT / "config/principals.example.json", llm_provider="rule_based",
-                        state_path=tmp_path / "state.db")
+                        state_path=tmp_path / "state.db", receipt_key_path=tmp_path / "receipt-key.pem")
     errors, warnings = check_config(settings, environ={})
     assert not errors
     assert warnings[0] == "principals file still contains the example placeholder hashes."
@@ -135,3 +138,13 @@ def test_serve_refuses_to_start_with_broken_config(monkeypatch, tmp_path, capsys
     assert main(["serve"]) == 1
     err = capsys.readouterr().err
     assert "file not found" in err and "not starting" in err
+
+
+def test_check_config_receipt_key(tmp_path):
+    _, warnings = check_config(Settings(llm_provider="rule_based"), environ={})
+    assert any("receipts are hash-chained but not signed" in w for w in warnings)
+    (tmp_path / "bad.pem").write_text("not a key", encoding="utf-8")
+    errors, _ = check_config(Settings(llm_provider="rule_based", receipt_key_path=tmp_path / "bad.pem"), environ={})
+    assert any(e.startswith("receipts: cannot load the receipt signing key") for e in errors)
+    _, warnings = check_config(Settings(llm_provider="rule_based", receipts="off"), environ={})
+    assert not any("receipt" in w for w in warnings)

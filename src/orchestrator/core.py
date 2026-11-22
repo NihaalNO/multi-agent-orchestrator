@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from orchestrator.answers import Answer, AnswerComposer, build_composer, compose_answer, earlier_evidence
 from orchestrator.config import Settings
+from orchestrator.receipts import Receipt, ReceiptChain, ReceiptIssuer, Signer
 from orchestrator.contracts import (
     ApprovalStatus,
     ErrorInfo,
@@ -75,6 +76,15 @@ class RequestState(StrEnum):
 
 
 MAX_CONTEXT = 5  # earlier requests a follow-up can build on
+
+
+def _approver(approvals: ApprovalManager):
+    def who(approval_id: str) -> str | None:
+        try:
+            return approvals.get(approval_id).decided_by
+        except Exception:  # an expired or unknown approval: the receipt records the id only
+            return None
+    return who
 
 
 def _outputs(record: "RequestRecord") -> dict[str, Any]:
@@ -141,6 +151,7 @@ class RequestRecord(BaseModel):
     context: tuple[str, ...] = ()     # earlier requests of this conversation, oldest first (R1, R2, ...)
     answer: Answer | None = None      # grounded answer written from the tool results (see answers.py)
     answer_note: str = ""              # why there is no answer, when one was expected
+    receipt: Receipt | None = None    # signed, hash-chained proof of this run (see receipts.py)
 
     @property
     def pending_approvals(self) -> dict[str, str]:
@@ -288,9 +299,11 @@ class Orchestrator:
         store: RequestStore | None = None,
         idempotency_backend: IdempotencyBackend | None = None,
         composer: AnswerComposer | None = None,
+        receipts: ReceiptIssuer | None = None,
     ) -> None:
         self.settings = settings or Settings()
         self.composer = composer
+        self.receipts = receipts
         self.registry = registry
         self.permissions = permissions
         self.approvals = approvals
@@ -316,10 +329,17 @@ class Orchestrator:
         planner: Planner | None = None,
         store: RequestStore | None = None,
         idempotency_backend: IdempotencyBackend | None = None,
+        receipt_chain: ReceiptChain | None = None,
     ) -> "Orchestrator":
         composer = build_composer(settings) if planner is None else None
+        receipts = None
+        if settings.receipts != "off":
+            signer = Signer(settings.receipt_key_path) if settings.receipt_key_path else None
+            receipts = ReceiptIssuer(receipt_chain, signer, policy_grants=lambda: permissions.policy.grants,
+                                     approver=_approver(approvals))
         return cls(registry, planner or build_planner(settings, audit), permissions, approvals, audit,
-                   settings=settings, store=store, idempotency_backend=idempotency_backend, composer=composer)
+                   settings=settings, store=store, idempotency_backend=idempotency_backend, composer=composer,
+                   receipts=receipts)
 
     # ------------------------------------------------------------------ queries
 
@@ -557,6 +577,11 @@ class Orchestrator:
         record = record.model_copy(update={"state": state, "updated_at": _now(),
                                            "stages": (*record.stages, *stages), **fields})
         record = record.model_copy(update={"summary": build_summary(record)})
+        if self.receipts is not None and state not in (RequestState.RUNNING, RequestState.AWAITING_APPROVAL):
+            receipt = self.receipts.issue(record)
+            record = record.model_copy(update={"receipt": receipt})
+            self.audit.record("receipt.issued", request_id=record.request_id, sequence=receipt.sequence,
+                              receipt_sha256=receipt.receipt_sha256, signed=receipt.signature is not None)
         self.store.put(record)
         self.audit.record(
             "request.finished", request_id=record.request_id, user_id=record.user_id, state=state.value,

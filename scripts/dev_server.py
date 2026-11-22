@@ -73,6 +73,17 @@ def ensure_dev_user() -> bool:
     return True
 
 
+def ensure_receipt_key() -> Path:
+    """A local Ed25519 key for signing receipts (gitignored, like the dev API key)."""
+    path = DEV_CONFIG / "receipt-key.pem"
+    if not path.exists():
+        sys.path.insert(0, str(ROOT / "src"))
+        from orchestrator.receipts import generate_key
+
+        generate_key(path)
+    return path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the orchestrator API for local development.")
     parser.add_argument("--port", type=int, default=8000)
@@ -86,6 +97,7 @@ def main() -> int:
         "ORCH_STATE_PATH": str(ROOT / "data" / "dev" / "state.db"),
         "ORCH_AUDIT_LOG_PATH": str(ROOT / "data" / "dev" / "audit.jsonl"),
         "ORCH_FILE_TOOL_ROOT": str(ROOT / "data" / "uploads"),
+        "ORCH_RECEIPT_KEY_PATH": str(ensure_receipt_key()),
     }
     for name, value in defaults.items():
         os.environ.setdefault(name, value)

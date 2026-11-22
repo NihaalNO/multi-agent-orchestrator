@@ -3,6 +3,8 @@
   serve          run the HTTP API (uvicorn)
   hash-key       print the SHA-256 hash of an API key for principals.json
   check-config   load settings, policy and principals and report problems before deploying
+  receipt-key    create the Ed25519 key that signs receipts
+  verify-receipt check a receipt's signature, compare it with its request record, or check a chain
 """
 
 from __future__ import annotations
@@ -98,6 +100,18 @@ def check_config(settings: Settings, environ: dict[str, str] | None = None) -> t
             warnings.append(f"python_exec will run in a plain subprocess (not a security sandbox): {reason}")
     else:
         warnings.append("ORCH_PYTHON_SANDBOX=subprocess: python_exec is not sandboxed; grant it only to trusted users.")
+
+    if settings.receipts != "off":
+        if settings.receipt_key_path is None:
+            warnings.append("ORCH_RECEIPT_KEY_PATH is not set: receipts are hash-chained but not signed; create a key "
+                            "with `python -m orchestrator receipt-key --out <path>`.")
+        else:
+            from orchestrator.receipts import Signer
+
+            try:
+                Signer(settings.receipt_key_path)
+            except ConfigurationError as exc:
+                errors.append(f"receipts: {exc.message}")
 
     if settings.state_path is None:
         warnings.append("ORCH_STATE_PATH is not set: requests, approvals and duplicate protection are kept in "
@@ -205,6 +219,51 @@ def cmd_check_config(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
+def cmd_receipt_key(args: argparse.Namespace) -> int:
+    from orchestrator.receipts import generate_key, key_id
+
+    try:
+        public = generate_key(args.out)
+    except ConfigurationError as exc:
+        print(f"ERROR {exc.message}", file=sys.stderr)
+        return 1
+    print(f"private key written to {args.out} (keep it secret; set ORCH_RECEIPT_KEY_PATH to this path)")
+    print(f"key id: {key_id(public)}")
+    print(public, end="")
+    return 0
+
+
+def cmd_verify_receipt(args: argparse.Namespace) -> int:
+    import json
+
+    from orchestrator.receipts import Receipt, verify_against_record, verify_chain, verify_signature
+
+    def load(path):
+        return json.loads(open(path, encoding="utf-8").read())
+
+    findings = []
+    public = open(args.public_key, encoding="utf-8").read() if args.public_key else None
+    if args.chain:
+        data = load(args.chain)
+        receipts = [Receipt.model_validate(r) for r in (data["receipts"] if isinstance(data, dict) else data)]
+        findings += verify_chain(receipts)
+        if public:
+            findings += [verify_signature(r, public) for r in receipts]
+    if args.receipt:
+        receipt = Receipt.model_validate(load(args.receipt))
+        findings.append(verify_signature(receipt, public) if public else
+                        verify_signature(receipt, "") if not receipt.signature else None)
+        if args.record:
+            findings += verify_against_record(receipt, load(args.record))
+    findings = [f for f in findings if f is not None]
+    if not findings:
+        print("nothing to check: give a receipt (with --public-key and/or --record) or --chain")
+        return 2
+    for f in findings:
+        print(f"{f.level.upper():7} {f.message}")
+    return 1 if any(f.level == "error" for f in findings) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m orchestrator", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -223,6 +282,17 @@ def main(argv: list[str] | None = None) -> int:
 
     cc = sub.add_parser("check-config", help="validate configuration from ORCH_* environment variables")
     cc.set_defaults(func=cmd_check_config)
+
+    rk = sub.add_parser("receipt-key", help="create the Ed25519 key that signs receipts")
+    rk.add_argument("--out", required=True, help="where to write the private key (PEM); never overwritten")
+    rk.set_defaults(func=cmd_receipt_key)
+
+    vr = sub.add_parser("verify-receipt", help="check receipts offline")
+    vr.add_argument("receipt", nargs="?", help="a receipt JSON file (GET /requests/{id}/receipt)")
+    vr.add_argument("--public-key", help="PEM file from GET /receipts/public-key")
+    vr.add_argument("--record", help="the request record JSON (GET /requests/{id}) to compare hashes with")
+    vr.add_argument("--chain", help="JSON from GET /admin/receipts: check sequence and links")
+    vr.set_defaults(func=cmd_verify_receipt)
 
     args = parser.parse_args(argv)
     return args.func(args)

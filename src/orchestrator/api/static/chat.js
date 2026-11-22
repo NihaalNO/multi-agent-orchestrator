@@ -376,6 +376,24 @@ async function renderRecord(bubble, record, status) {
   }
   const s = steps(record);
   if (s) bubble.append(s);
+  if (record.receipt) bubble.append(receiptLine(record.receipt));
+}
+
+// The request's receipt: hashes and ids only, signed when the server has a key. Downloadable for
+// offline checks with `python -m orchestrator verify-receipt`.
+function receiptLine(r) {
+  const signed = r.signature ? `signed with key ${r.key_id}` : "not signed (no key on this server)";
+  const save = el("button", { type: "button", class: "link small-link", text: "Download receipt",
+    onclick: () => {
+      const blob = new Blob([JSON.stringify(r, null, 2)], { type: "application/json" });
+      const a = el("a", { href: URL.createObjectURL(blob), download: `receipt-${r.request_id}.json` });
+      document.body.append(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    } });
+  return el("p", { class: "muted small receipt",
+    title: "Proof of what ran: hashes of the plan, every step's arguments and output, the answer and the policy, chained to the previous receipt" },
+    `Receipt #${r.sequence} · ${signed} · `, save);
 }
 
 async function resume(requestId, button) {

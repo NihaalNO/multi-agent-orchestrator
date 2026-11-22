@@ -29,16 +29,17 @@ cross-checks the results, and returns one consolidated answer — with every dec
 8. [Running the server](#running-the-server)
 9. [Using the API](#using-the-api)
 10. [Built-in tools](#built-in-tools)
-11. [Grounded answers: explainable responses](#grounded-answers-explainable-responses)
-12. [Trustworthy results: conflicts and caveats](#trustworthy-results-conflicts-and-caveats)
-13. [Reliability: retries, duplicates, restarts](#reliability-retries-duplicates-restarts)
-14. [Observability](#observability)
-15. [Extending the orchestrator](#extending-the-orchestrator)
-16. [Examples](#examples)
-17. [Testing and CI](#testing-and-ci)
-18. [Project structure](#project-structure)
-19. [Status and known limitations](#status-and-known-limitations)
-20. [Documentation](#documentation)
+11. [Receipts: proof of what ran](#receipts-proof-of-what-ran)
+12. [Grounded answers: explainable responses](#grounded-answers-explainable-responses)
+13. [Trustworthy results: conflicts and caveats](#trustworthy-results-conflicts-and-caveats)
+14. [Reliability: retries, duplicates, restarts](#reliability-retries-duplicates-restarts)
+15. [Observability](#observability)
+16. [Extending the orchestrator](#extending-the-orchestrator)
+17. [Examples](#examples)
+18. [Testing and CI](#testing-and-ci)
+19. [Project structure](#project-structure)
+20. [Status and known limitations](#status-and-known-limitations)
+21. [Documentation](#documentation)
 
 ---
 
@@ -485,6 +486,28 @@ Full details, error codes and the complete record format: [docs/API.md](docs/API
 | **Web search** | `search` | `web.search` | registered only with a real backend (`ORCH_SEARCH_BACKEND`) |
 
 ---
+
+## Receipts: proof of what ran
+
+Every finished request gets a **receipt** — hashes, ids and statuses, no data — signed with an
+Ed25519 key (`ORCH_RECEIPT_KEY_PATH`; the dev server creates one) and chained to the previous receipt:
+
+- the question, the **permission policy in force** and the plan, each as a SHA-256;
+- every step: status, the hash of the **exact arguments that ran**, the hash of its **output**, and the
+  approval it used and **who approved it**;
+- the written answer's text and evidence hashes and each claim's check result;
+- for follow-ups, the receipts of the earlier requests they built on.
+
+Anyone with the public key (`GET /receipts/public-key`) can check a receipt **offline**, and
+compare it with the request record to show nothing was changed afterwards:
+
+```powershell
+python -m orchestrator verify-receipt receipt.json --public-key pub.pem --record record.json
+```
+
+Editing one output in the record is reported (`step compute_average output: does NOT match the
+record`); removing or rewriting a receipt breaks the chain (`--chain`, from `GET /admin/receipts`).
+In the chat, each reply shows "Receipt #N · signed with key …" with a download button.
 
 ## Grounded answers: explainable responses
 
