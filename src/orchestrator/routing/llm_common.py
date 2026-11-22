@@ -43,6 +43,10 @@ the code receives that object unchanged as the variable `inputs`, reads named pa
 inputs['rows'], and must assign the answer to `result`. Python code cannot open uploaded files: read \
 them with a file capability first and pass the result through `inputs`.
 - Only reference files that the request names or that are listed as uploaded.
+- When <conversation> lists earlier turns (R1, R2, ...), the request may refer to their results \
+("it", "that average"). Use an earlier step's output by reference, {"$ref": "@R1.<task_id>.<path>"}, \
+for example as a python input; never retype values from earlier turns. Re-run a step only if the \
+request asks for fresh data.
 - When <uploaded_files> lists a file's columns, use those exact names (they are case-sensitive).
 - read_csv returns every cell as a string, even numbers: in code, convert before doing arithmetic, \
 for example float(r['Revenue']).
@@ -131,11 +135,25 @@ def user_message(request: PlanningRequest, catalog: ToolCatalog, feedback: str |
     message = (
         f"<tool_catalog>\n{catalog.to_prompt_json()}\n</tool_catalog>\n\n"
         f"<uploaded_files>\n{files}\n</uploaded_files>\n\n"
-        f"<user_request>\n{request.text}\n</user_request>"
+        + (f"<conversation>\n{conversation_text(request.history)}\n</conversation>\n\n" if request.history else "")
+        + f"<user_request>\n{request.text}\n</user_request>"
     )
     if feedback:
         message += f"\n\n<previous_attempt>\n{feedback}\n</previous_attempt>\n\n{REPAIR_INSTRUCTIONS}"
     return message
+
+
+def conversation_text(history) -> str:
+    """Earlier turns for the planner: question, answer and step outputs by reference path."""
+    blocks = []
+    for turn in history:
+        lines = [f"{turn.alias}: the user asked: {turn.text}"]
+        if turn.answer:
+            lines.append(f"  answer given: {turn.answer}")
+        for task_id, summary in turn.steps.items():
+            lines.append(f"  @{turn.alias}.{task_id} = {summary}")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
 
 
 def no_tools_proposal(request: PlanningRequest, planner: str) -> PlanProposal:

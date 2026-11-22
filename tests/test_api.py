@@ -168,7 +168,7 @@ def test_chat_ui_clears_the_conversation_between_users_and_messages():
     sign_out = js[js.index("function signOut"):js.index("// ----", js.index("function signOut"))]
     assert "resetConversation()" in sign_out           # nothing left on screen for the next user
     send = js[js.index("async function send"):]
-    assert send.index("state.attached = []") < send.index('api("POST", "/requests"')  # files go with one message
+    assert send.index("state.attached = []") < send.index("streamRequest(")  # files go with one message
 
 
 def test_chat_ui_links_only_web_addresses():

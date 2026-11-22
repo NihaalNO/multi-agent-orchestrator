@@ -7,6 +7,10 @@ and permission manager against the registry, never taken from the plan itself.
 Task inputs may reference upstream outputs with ``{"$ref": "<task_id>.<dot.path>"}``. Every
 referenced task is automatically added to ``depends_on`` so a reference can never run before
 the value it needs exists.
+
+``{"$ref": "@R1.<task_id>.<dot.path>"}`` references an output of an *earlier request* in the same
+conversation (``R1`` is its alias, see ``Orchestrator.submit(context=...)``). Those values already
+exist, so they add no dependency; they are resolved from the stored record at execution time.
 """
 
 from __future__ import annotations
@@ -22,18 +26,32 @@ from orchestrator.errors import PlanCycleError, UnknownDependencyError
 REF_KEY = "$ref"
 
 
+CONTEXT_PREFIX = "@"
+
+
 class InputRef(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     task_id: str
     path: tuple[str, ...] = ()
+    context: str | None = Field(default=None, description="Alias of an earlier request (R1...), or None.")
 
     @classmethod
     def parse(cls, raw: str) -> "InputRef":
+        context = None
+        if raw.startswith(CONTEXT_PREFIX):
+            alias, _, raw = raw[1:].partition(".")
+            if not alias or not raw:
+                raise ValueError(f"invalid $ref {CONTEXT_PREFIX}{alias}.{raw!r}: expected @<alias>.<task_id>[.path]")
+            context = alias
         parts = raw.split(".")
         if not parts or not parts[0]:
             raise ValueError(f"invalid $ref {raw!r}")
-        return cls(task_id=parts[0], path=tuple(p for p in parts[1:] if p))
+        return cls(task_id=parts[0], path=tuple(p for p in parts[1:] if p), context=context)
+
+    def __str__(self) -> str:
+        head = f"{CONTEXT_PREFIX}{self.context}.{self.task_id}" if self.context else self.task_id
+        return ".".join((head, *self.path))
 
 
 def find_refs(value: Any) -> list[InputRef]:
@@ -72,7 +90,7 @@ class TaskSpec(BaseModel):
 
     @model_validator(mode="after")
     def _merge_ref_dependencies(self) -> "TaskSpec":
-        ref_deps = [r.task_id for r in find_refs(self.inputs)]
+        ref_deps = [r.task_id for r in find_refs(self.inputs) if r.context is None]
         merged = tuple(dict.fromkeys([*self.depends_on, *ref_deps]))
         if self.task_id in merged:
             raise ValueError(f"task {self.task_id!r} depends on itself")
@@ -160,6 +178,19 @@ class ExecutionPlan(BaseModel):
 # --- Planning & routing -------------------------------------------------------------------
 
 
+class HistoryTurn(BaseModel):
+    """An earlier request in the same conversation, as the planner sees it: its question, its
+    answer, and each successful step's output *shape* (plus the value when it is a single number or
+    short string). Later steps reference its outputs with ``{"$ref": "@<alias>.<task_id>.<path>"}``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    alias: str
+    text: str
+    answer: str | None = None
+    steps: dict[str, str] = Field(default_factory=dict, description="task_id -> output shape / value")
+
+
 class PlanningRequest(BaseModel):
     """What a planner receives. ``text`` is user content and must be treated as untrusted."""
 
@@ -168,6 +199,7 @@ class PlanningRequest(BaseModel):
     request_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     text: str = Field(min_length=1, max_length=20_000)
     files: tuple[str, ...] = Field(default=(), description="Uploaded file paths the request may refer to.")
+    history: tuple[HistoryTurn, ...] = Field(default=(), description="Earlier turns of this conversation, oldest first.")
     file_columns: dict[str, tuple[str, ...]] = Field(
         default_factory=dict,
         description="Column names of CSV files the request refers to (header only, no data), added by "

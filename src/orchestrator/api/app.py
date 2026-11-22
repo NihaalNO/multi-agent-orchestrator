@@ -8,6 +8,7 @@ Files: PUT /files/{path} (raw body), GET /files, DELETE /files/{path} — see ``
 
 Request lifecycle over HTTP:
   POST /requests                 plan, route, authorize, execute, resolve; returns the record
+  POST /requests/stream          the same, as server-sent events: live progress, then the record
   GET  /requests/{id}            the record (owner or admin)
   POST /requests/{id}/resume     after approvals are decided, run what is left
 Status codes: 200 completed/failed, 202 awaiting approval, 4xx/5xx rejected (body is the record).
@@ -15,13 +16,16 @@ Status codes: 200 completed/failed, 202 awaiting approval, 4xx/5xx rejected (bod
 
 # No `from __future__ import annotations` here: FastAPI must resolve the closure-local
 # dependency aliases (PrincipalDep, AdminDep, ...) at route-definition time.
+import asyncio
+import json
+import uuid
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from orchestrator.core import Orchestrator, RequestRecord, RequestState, register_default_tools
@@ -46,6 +50,7 @@ from orchestrator.errors import (
     ToolNotFoundError,
 )
 from orchestrator.observability.audit import AuditLog
+from orchestrator.observability.progress import ProgressHub
 from orchestrator.permissions import (
     ApprovalManager,
     ApprovalNotFoundError,
@@ -126,6 +131,9 @@ class SubmitBody(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
     files: list[str] = Field(default_factory=list, max_length=50)
     allow_partial: bool = False
+    # Earlier requests of this conversation (your own, completed), oldest first: follow-ups can use
+    # their results ("now double it"). See Orchestrator.submit.
+    context: list[str] = Field(default_factory=list, max_length=5)
 
 
 def _record_response(record: RequestRecord) -> JSONResponse:
@@ -214,7 +222,12 @@ def create_app(
             if state is not None:
                 state.close()
 
+    progress = ProgressHub()
+    orchestrator.audit.add_sink(progress)
+    background: set[asyncio.Task] = set()  # requests whose stream closed early keep running
+
     app = FastAPI(title="Multi-Tool Orchestrator", version=__version__, lifespan=lifespan)
+    app.state.progress = progress
     app.state.settings = settings
     app.state.registry = registry
     app.state.audit = audit
@@ -303,9 +316,61 @@ def create_app(
     ) -> JSONResponse:
         record = await orchestrator.submit(
             body.text, principal, files=tuple(body.files),
-            idempotency_key=idempotency_key, allow_partial=body.allow_partial,
+            idempotency_key=idempotency_key, allow_partial=body.allow_partial, context=tuple(body.context),
         )
         return _record_response(record)
+
+    @app.post("/requests/stream")
+    async def submit_request_stream(
+        body: SubmitBody,
+        principal: PrincipalDep,
+        idempotency_key: Annotated[str | None, Header(max_length=200)] = None,
+    ) -> StreamingResponse:
+        """Server-sent events: ``accepted`` (the request id), ``progress`` (one per step change,
+        see ``observability.progress``), then ``record`` (the same body as ``POST /requests``) or
+        ``error``. Closing the stream does not cancel the request; fetch it later by id."""
+        request_id = uuid.uuid4().hex
+        sub = progress.subscribe(request_id)
+        task = asyncio.create_task(orchestrator.submit(
+            body.text, principal, files=tuple(body.files), idempotency_key=idempotency_key,
+            allow_partial=body.allow_partial, request_id=request_id, context=tuple(body.context),
+        ))
+        background.add(task)
+        task.add_done_callback(background.discard)
+
+        def sse(event: str, data: Any) -> str:
+            return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+        async def events():
+            try:
+                yield sse("accepted", {"request_id": request_id})
+                while not task.done():
+                    getter = asyncio.ensure_future(sub.get())
+                    done, _ = await asyncio.wait({getter, task}, timeout=15, return_when=asyncio.FIRST_COMPLETED)
+                    if getter in done:
+                        yield sse("progress", getter.result())
+                    else:
+                        getter.cancel()
+                        if not done:
+                            yield ": keep-alive\n\n"
+                for message in sub.drain():
+                    yield sse("progress", message)
+                try:
+                    record = task.result()
+                except OrchestratorError as exc:
+                    yield sse("error", {"status": _status_for(exc), "error": exc.to_dict()})
+                    return
+                except Exception:
+                    yield sse("error", {"status": 500, "error": {"code": "internal_error",
+                                                                  "message": "the request failed unexpectedly"}})
+                    return
+                response = _record_response(record)
+                yield sse("record", {"status": response.status_code, "record": json.loads(response.body)})
+            finally:
+                sub.close()
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/requests/{request_id}")
     async def get_request(request_id: str, principal: PrincipalDep) -> dict[str, Any]:

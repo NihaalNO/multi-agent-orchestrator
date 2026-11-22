@@ -11,6 +11,7 @@ from orchestrator.contracts.permissions import (
 )
 from orchestrator.contracts.plan import (
     ExecutionPlan,
+    HistoryTurn,
     InputRef,
     PlanningRequest,
     PlanProposal,
@@ -56,6 +57,7 @@ __all__ = [
     "ExecutionReport",
     "ExecutionStatus",
     "HealthStatus",
+    "HistoryTurn",
     "InputRef",
     "IsolationLevel",
     "OperationSpec",

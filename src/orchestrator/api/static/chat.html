@@ -48,7 +48,10 @@
         <textarea id="text" rows="1" placeholder="Message the agent" title="Enter to send, Shift+Enter for a new line" aria-label="Message the agent" required></textarea>
         <button id="send" type="submit" class="primary">Send</button>
       </div>
-      <label class="option"><input id="partial" type="checkbox" checked> Return partial results if some steps fail</label>
+      <div class="options">
+        <label class="option"><input id="partial" type="checkbox" checked> Return partial results if some steps fail</label>
+        <button id="new-conversation" class="link small-link" type="button" title="Forget earlier messages; follow-ups start fresh">New conversation</button>
+      </div>
     </form>
   </main>
 </body>

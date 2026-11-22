@@ -40,7 +40,7 @@ class Evidence(BaseModel):
 
     id: str
     task_id: str
-    kind: Literal["computed", "web", "file", "data"]
+    kind: Literal["computed", "web", "file", "data", "earlier"]
     label: str
     text: str = Field(description="What the model sees for this item.")
     url: str | None = None
@@ -65,6 +65,8 @@ class Answer(BaseModel):
     evidence: tuple[Evidence, ...] = ()
     composer: str = ""
     model: str | None = None
+    cites_inline: bool = Field(default=True, description="False when the answer text itself cites no evidence; "
+                                                         "the claims list is then the only link to sources.")
 
     @property
     def supported(self) -> int:
@@ -309,12 +311,43 @@ def verify(raw: _RawAnswer, evidence: Sequence[Evidence]) -> tuple[str, tuple[Cl
     return text, tuple(claims)
 
 
+def earlier_evidence(plan: ExecutionPlan | None, turns: Sequence[tuple[str, Any]]) -> list[Evidence]:
+    """Values from earlier requests that this plan references (``@R1.task.path``), so an answer
+    that mentions them ("doubling 129,325 gives 258,650") can be checked like any other claim."""
+    from orchestrator.contracts import find_refs
+    from orchestrator.errors import InputResolutionError
+    from orchestrator.execution.refs import lookup
+
+    if plan is None or not turns:
+        return []
+    by_alias = {alias: record for alias, record in turns}
+    context = {alias: {r.task_id: r.output for r in (rec.report.task_results if rec.report else ())
+                       if r.output is not None} for alias, rec in by_alias.items()}
+    items, seen = [], set()
+    for task in plan.tasks:
+        for ref in find_refs(task.inputs):
+            if ref.context is None or str(ref) in seen or ref.context not in by_alias:
+                continue
+            seen.add(str(ref))
+            try:
+                value = lookup(ref, {}, context)
+            except InputResolutionError:
+                continue
+            asked = by_alias[ref.context].text
+            items.append(Evidence(id="", task_id=ref.task_id, kind="earlier", label=f"Earlier result {ref}",
+                                  text=_clip(f"From an earlier message ({ref.context}: \"{asked[:200]}\"): "
+                                             f"{ref} = {_compact(value)}", _ITEM_CHARS)))
+    return items
+
+
 async def compose_answer(composer: AnswerComposer, question: str, plan: ExecutionPlan | None,
-                         report: ExecutionReport | None) -> Answer | None:
+                         report: ExecutionReport | None, *, extra: Sequence[Evidence] = ()) -> Answer | None:
     evidence = build_evidence(plan, report)
+    if extra:  # earlier values first, then this run's results; renumbered as one list
+        evidence = [e.model_copy(update={"id": f"E{i}"}) for i, e in enumerate([*extra, *evidence], start=1)]
     if not evidence:
         return None
     raw = parse_answer(await composer.compose(question, evidence))
     text, claims = verify(raw, evidence)
     return Answer(text=text, claims=claims, gaps=tuple(g for g in raw.gaps if g.strip()), evidence=tuple(evidence),
-                  composer=composer.name, model=composer.model)
+                  composer=composer.name, model=composer.model, cites_inline=bool(_CITE.search(text)))

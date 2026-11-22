@@ -25,11 +25,11 @@ import time
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from orchestrator.answers import Answer, AnswerComposer, build_composer, compose_answer
+from orchestrator.answers import Answer, AnswerComposer, build_composer, compose_answer, earlier_evidence
 from orchestrator.config import Settings
 from orchestrator.contracts import (
     ApprovalStatus,
@@ -37,6 +37,7 @@ from orchestrator.contracts import (
     ExecutionPlan,
     ExecutionReport,
     ExecutionStatus,
+    HistoryTurn,
     IsolationLevel,
     PlanningRequest,
     Principal,
@@ -52,7 +53,7 @@ from orchestrator.errors import (
     RequestNotFoundError,
 )
 from orchestrator.execution import DagScheduler, ExecutionEngine
-from orchestrator.repair import AttemptSummary, build_feedback, repairable_failures, reusable_results
+from orchestrator.repair import AttemptSummary, build_feedback, repairable_failures, reusable_results, shape
 from orchestrator.execution.coordination import IdempotencyBackend
 from orchestrator.observability.audit import AuditLog
 from orchestrator.permissions import ApprovalManager, PermissionManager, PlanAuthorization
@@ -71,6 +72,41 @@ class RequestState(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     COMPLETED = "completed"          # everything, or part of it, succeeded (see report.status)
     FAILED = "failed"                # execution ran but nothing succeeded
+
+
+MAX_CONTEXT = 5  # earlier requests a follow-up can build on
+
+
+def _outputs(record: "RequestRecord") -> dict[str, Any]:
+    """Outputs of the steps that succeeded in a finished request, by task id."""
+    if record.report is None:
+        return {}
+    return {r.task_id: r.output for r in record.report.task_results
+            if r.status == TaskStatus.SUCCEEDED and r.output is not None}
+
+
+def _history(turns: list[tuple[str, "RequestRecord"]]) -> tuple[HistoryTurn, ...]:
+    """What the planner learns about earlier turns: question, answer, and each step's output shape,
+    plus the value when it is a single number or short string (the planner still references it)."""
+    history = []
+    for alias, earlier in turns:
+        steps = {}
+        for task_id, output in _outputs(earlier).items():
+            summary = shape(output)
+            value = output.get("result") if isinstance(output, dict) else None
+            if isinstance(value, (int, float)) or (isinstance(value, str) and len(value) <= 120):
+                summary += f"; result = {value!r}"
+            steps[task_id] = summary
+        answer = earlier.answer.text[:600] if earlier.answer else None
+        history.append(HistoryTurn(alias=alias, text=earlier.text[:600], answer=answer, steps=steps))
+    return tuple(history)
+
+
+def _question(text: str, turns: list[tuple[str, "RequestRecord"]]) -> str:
+    if not turns:
+        return text
+    earlier = "; ".join(f'{alias}: "{r.text[:300]}"' for alias, r in turns)
+    return f"{text}\n(Earlier questions in this conversation: {earlier})"
 
 
 class StageTiming(BaseModel):
@@ -102,6 +138,7 @@ class RequestRecord(BaseModel):
     stages: tuple[StageTiming, ...] = ()
     executions: int = 0
     replans: tuple[AttemptSummary, ...] = ()  # failed attempts that were re-planned, oldest first
+    context: tuple[str, ...] = ()     # earlier requests of this conversation, oldest first (R1, R2, ...)
     answer: Answer | None = None      # grounded answer written from the tool results (see answers.py)
     answer_note: str = ""              # why there is no answer, when one was expected
 
@@ -302,8 +339,17 @@ class Orchestrator:
         files: tuple[str, ...] = (),
         idempotency_key: str | None = None,
         allow_partial: bool = False,
+        request_id: str | None = None,
+        context: Sequence[str] = (),
     ) -> RequestRecord:
-        request = PlanningRequest(text=text, files=tuple(files))  # stage 1: validates length etc.
+        """``request_id`` lets a caller choose the id up front (the streaming API subscribes to its
+        progress before the request starts); by default one is generated."""
+        ids = {"request_id": request_id} if request_id else {}
+        context = tuple(dict.fromkeys(context))
+        if len(context) > MAX_CONTEXT:
+            raise ValueError(f"at most {MAX_CONTEXT} earlier requests can be used as context")
+        turns = self._turns(context, principal.user_id)  # raises before anything is recorded
+        request = PlanningRequest(text=text, files=tuple(files), history=_history(turns), **ids)  # stage 1
         async with self.store.lock:
             if idempotency_key:
                 existing = self.store.by_key(principal.user_id, idempotency_key)
@@ -313,13 +359,13 @@ class Orchestrator:
             now = _now()
             record = RequestRecord(
                 request_id=request.request_id, user_id=principal.user_id, text=text, files=request.files,
-                state=RequestState.RUNNING, created_at=now, updated_at=now,
+                state=RequestState.RUNNING, created_at=now, updated_at=now, context=context,
             )
             self.store.put(record)
             if idempotency_key:
                 self.store.bind_key(principal.user_id, idempotency_key, record.request_id)
         self.audit.record("request.received", request_id=record.request_id, user_id=principal.user_id,
-                          files=list(request.files))
+                          files=list(request.files), context=list(context))
         started = time.perf_counter()
         stages: list[StageTiming] = []
 
@@ -401,8 +447,11 @@ class Orchestrator:
         if self.composer is None or state != RequestState.COMPLETED:
             return {}
         t = time.perf_counter()
+        self.audit.record("answer.started", request_id=record.request_id, composer=self.composer.name)
         try:
-            answer = await compose_answer(self.composer, record.text, record.plan, report)
+            turns = self._turns(record.context, record.user_id)
+            answer = await compose_answer(self.composer, _question(record.text, turns), record.plan, report,
+                                          extra=earlier_evidence(record.plan, turns))
         except Exception as exc:  # the answer is an extra; the request already succeeded
             stages.append(StageTiming(stage="answer", duration_ms=self._ms(t)))
             self.audit.record("answer.failed", request_id=record.request_id, user_id=record.user_id,
@@ -427,6 +476,7 @@ class Orchestrator:
             report = await self.scheduler.execute(
                 record.plan, principal=principal, idempotency_key=idempotency_key or record.request_id,
                 approvals=record.pending_approvals, deadline_s=self.settings.execution_deadline_s, prior=prior,
+                context=self._context_outputs(record),
             )
         except BaseException:
             # Never leave a record stuck in RUNNING (e.g. the caller was cancelled).
@@ -515,6 +565,28 @@ class Orchestrator:
             requires_review=bool(record.report and record.report.requires_review),
         )
         return record
+
+    # ------------------------------------------------------------------ conversation memory
+
+    def _turns(self, context: Sequence[str], user_id: str) -> list[tuple[str, RequestRecord]]:
+        """Earlier requests as (alias, record). Only the user's own completed requests: anyone else's
+        is reported as not found (the API never confirms that another user's request exists), and
+        admins get no exception here — their view rights do not extend to reusing others' results."""
+        turns = []
+        for n, request_id in enumerate(context, start=1):
+            earlier = self.store.get(request_id)
+            if earlier is None or earlier.user_id != user_id:
+                raise RequestNotFoundError(f"request {request_id!r} not found")
+            if earlier.state != RequestState.COMPLETED or earlier.report is None:
+                raise InvalidRequestStateError(
+                    f"request {request_id!r} has no results to build on ({earlier.state.value})",
+                    details={"request_id": request_id, "state": earlier.state.value},
+                )
+            turns.append((f"R{n}", earlier))
+        return turns
+
+    def _context_outputs(self, record: RequestRecord) -> dict[str, dict[str, Any]]:
+        return {alias: _outputs(earlier) for alias, earlier in self._turns(record.context, record.user_id)}
 
     @staticmethod
     def _ms(since: float) -> float:

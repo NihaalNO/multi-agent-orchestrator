@@ -4,7 +4,10 @@
 
 const KEY_STORE = "orch.apiKey";
 const $ = (id) => document.getElementById(id);
-const state = { key: null, me: null, attached: [] };
+// history: ids of this conversation's completed requests, oldest first. Follow-ups send the last
+// MAX_CONTEXT of them so the agent can use their results ("now double it").
+const MAX_CONTEXT = 5;
+const state = { key: null, me: null, attached: [], history: [] };
 
 // ------------------------------------------------------------------ helpers
 
@@ -104,6 +107,7 @@ async function signIn(key) {
 // attached is left on the page for the next person using this tab.
 function resetConversation() {
   state.attached = [];
+  state.history = [];
   $("chips").replaceChildren();
   $("text").value = "";
   const empty = $("empty-template").content.cloneNode(true);
@@ -242,7 +246,11 @@ function groundedAnswer(answer, requestId) {
       el("span", { text: c.statement }), " ", refs, c.note ? el("span", { class: "note", text: c.note }) : null));
   }
   why.append(list);
-  if (ok < claims.length) why.open = true;  // anything unconfirmed is shown, not tucked away
+  if (answer.cites_inline === false) {
+    box.append(el("p", { class: "muted small", text: "The answer text cites no evidence inline; each claim's sources are listed below." }));
+  }
+  // Anything unconfirmed, or an answer whose text links no sources, is shown, not tucked away.
+  if (ok < claims.length || answer.cites_inline === false) why.open = true;
   box.append(why);
 
   if ((answer.gaps || []).length) {
@@ -341,6 +349,9 @@ async function renderRecord(bubble, record, status) {
     return;
   }
   bubble.append(statusBadge(record));
+  const used = (record.context || []).length;
+  if (used) bubble.append(el("span", { class: "muted small context-note",
+    text: ` built on ${used} earlier message${used === 1 ? "" : "s"} in this conversation` }));
   if (record.answer) {
     bubble.append(groundedAnswer(record.answer, record.request_id));
   } else {
@@ -379,23 +390,151 @@ async function resume(requestId, button) {
   bubble.scrollIntoView({ block: "end", behavior: "smooth" });
 }
 
+// ------------------------------------------------------------------ live progress
+
+// POST /requests/stream: server-sent events read from the response body (EventSource cannot send
+// the Authorization header). Falls back to the plain endpoint when streaming is not available.
+async function streamRequest(body, headers, onProgress) {
+  let res;
+  try {
+    res = await fetch("/requests/stream", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${state.key}`, "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return api("POST", "/requests", { body, headers });
+  }
+  if (res.status === 401) { signOut("Your API key was not accepted. Sign in again."); throw new Error("unauthorized"); }
+  const type = res.headers.get("content-type") || "";
+  if (!res.ok || !res.body || !type.startsWith("text/event-stream")) {
+    let data = null;
+    try { data = await res.json(); } catch { /* not JSON */ }
+    return { ok: res.ok, status: res.status, data };
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "", requestId = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, cut);
+      buffer = buffer.slice(cut + 2);
+      let event = "message", data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7);
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (!data) continue;  // keep-alive comment
+      const payload = JSON.parse(data);
+      if (event === "accepted") requestId = payload.request_id;
+      else if (event === "progress") onProgress(payload);
+      else if (event === "record") return { ok: payload.status < 400, status: payload.status, data: payload.record };
+      else if (event === "error") return { ok: false, status: payload.status, data: { error: payload.error } };
+    }
+  }
+  // The stream ended early (a proxy timeout, say); the request kept running, so fetch its record.
+  if (requestId) return api("GET", `/requests/${encodeURIComponent(requestId)}`);
+  throw new Error("stream ended");
+}
+
+const STEP_MARK = { succeeded: "✓", failed: "✗", timed_out: "⏱", denied: "⛔", skipped: "–", cancelled: "–",
+                    awaiting_approval: "⏸" };
+
+function progressView() {
+  const phase = el("span", { class: "phase", text: "Planning" });
+  const clock = el("span", { class: "muted clock" });
+  const steps = el("ol", { class: "steps" });
+  const root = el("div", { class: "progress" }, el("div", { class: "thinking-line" }, phase, " ", clock), steps);
+  let rows = new Map();
+  const started = Date.now();
+  const timer = setInterval(() => {
+    const s = Math.round((Date.now() - started) / 1000);
+    if (s >= 2) clock.textContent = `${s}s`;
+  }, 1000);
+
+  function row(taskId) {
+    if (!rows.has(taskId)) {
+      const mark = el("span", { class: "mark", text: "○" });
+      const name = el("span", { class: "step-name", text: taskId });
+      const info = el("span", { class: "muted step-info" });
+      const li = el("li", { class: "pending" }, mark, name, info);
+      steps.append(li);
+      rows.set(taskId, { li, mark, info });
+    }
+    return rows.get(taskId);
+  }
+
+  function update(msg) {
+    switch (msg.type) {
+      case "planner_retry": phase.textContent = "Planning (asking again: the first plan was unreadable)"; break;
+      case "planned":
+        phase.textContent = msg.tasks.length ? `Running ${msg.tasks.length} step${msg.tasks.length === 1 ? "" : "s"}` : "Planning";
+        msg.tasks.forEach(row);
+        break;
+      case "executing": msg.tasks.forEach(row); break;
+      case "task_started": {
+        const r = row(msg.task_id);
+        r.li.className = "running"; r.mark.textContent = "◌";
+        r.info.textContent = msg.tool ? `${msg.tool}.${msg.operation}` : "";
+        break;
+      }
+      case "task_retry":
+        row(msg.task_id).info.textContent = msg.attempt ? `retrying (attempt ${msg.attempt + 1})` : "retrying";
+        break;
+      case "task_finished": {
+        const r = row(msg.task_id);
+        r.li.className = msg.status;
+        r.mark.textContent = STEP_MARK[msg.status] || "•";
+        const ms = msg.duration_ms != null ? `${Math.round(msg.duration_ms)} ms` : "";
+        r.info.textContent = [msg.tool, msg.deduplicated ? "reused" : ms, msg.error].filter(Boolean).join(" · ");
+        break;
+      }
+      case "approval_needed": row(msg.task_id).info.textContent = "waiting for approval"; break;
+      case "replanning":
+        phase.textContent = `Re-planning after ${msg.failed.join(", ")} failed`;
+        steps.append(el("li", { class: "divider", text: "Revised plan" }));
+        rows = new Map();
+        break;
+      case "answering": phase.textContent = "Writing the answer from the results"; break;
+      case "finished": phase.textContent = "Done"; break;
+    }
+  }
+
+  return { root, update, stop: () => clearInterval(timer) };
+}
+
 async function send(text) {
   // Attachments go with this message only, so later, unrelated messages don't carry them.
   const files = [...state.attached];
   state.attached = [];
   $("chips").replaceChildren();
   addMessage("user", text, files.length ? el("div", { class: "files", text: `Files: ${files.join(", ")}` }) : null);
-  const bubble = addMessage("agent", working("Planning and running"));
+  const view = progressView();
+  const bubble = addMessage("agent", view.root);
   $("send").disabled = true;
   try {
-    const { status, data } = await api("POST", "/requests", {
-      body: { text, files, allow_partial: $("partial").checked },
-      headers: { "Idempotency-Key": newId() },
-    });
+    const context = state.history.slice(-MAX_CONTEXT);
+    const { status, data } = await streamRequest(
+      { text, files, allow_partial: $("partial").checked, context }, { "Idempotency-Key": newId() },
+      (msg) => { view.update(msg); bubble.scrollIntoView({ block: "end" }); });
+    view.stop();
+    if (context.length && (status === 404 || status === 409) && !(data && data.state)) {
+      // An earlier message can no longer be used (the server restarted without durable state, say).
+      state.history = [];
+      bubble.replaceChildren(el("p", { class: "error", text: `${errorText(data, status)} ` +
+        "Earlier messages are no longer available, so this conversation starts fresh: send it again." }));
+      return;
+    }
     await renderRecord(bubble, data, status);
+    if (data && data.state === "completed" && data.request_id) state.history.push(data.request_id);
   } catch (e) {
     bubble.replaceChildren(el("p", { class: "error", text: e.message === "unauthorized" ? "Signed out." : "Could not reach the server." }));
   } finally {
+    view.stop();
     $("send").disabled = false;
     bubble.scrollIntoView({ block: "end", behavior: "smooth" });
   }
@@ -427,6 +566,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (message) { $("signin-error").textContent = message; $("signin-error").hidden = false; }
   });
   $("signout").addEventListener("click", () => signOut());
+  $("new-conversation").addEventListener("click", () => { resetConversation(); $("text").focus(); });
   $("file").addEventListener("change", (ev) => { for (const f of ev.target.files) attach(f); ev.target.value = ""; });
   $("text").addEventListener("input", autosize);
   $("text").addEventListener("keydown", (ev) => {

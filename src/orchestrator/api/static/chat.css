@@ -97,6 +97,20 @@ input[type=password], textarea {
 .answer .value { font-size: 18px; font-weight: 600; }
 .summary { white-space: pre-wrap; margin: 8px 0 0; font-size: 14px; }
 .small { font-size: 12px; margin: 6px 0 0; }
+.progress { display: grid; gap: 6px; }
+.thinking-line .phase { font-weight: 600; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 14px; }
+.steps li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.steps .mark { width: 1.2em; text-align: center; flex: none; }
+.steps .step-name { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.steps li.pending { color: var(--muted); }
+.steps li.succeeded .mark { color: var(--ok); }
+.steps li.failed .mark, .steps li.timed_out .mark, .steps li.denied .mark { color: var(--bad); }
+.steps li.divider { color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); padding-top: 4px; }
+@media (prefers-reduced-motion: no-preference) {
+  .steps li.running .mark { display: inline-block; animation: spin 1.2s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+}
 .answer-block { margin-top: 8px; display: grid; gap: 6px; }
 .grounded { margin: 0; font-size: 16px; line-height: 1.6; }
 .cite { display: inline-block; font-size: 11px; font-weight: 700; line-height: 1; padding: 3px 5px; margin: 0 1px;
@@ -133,6 +147,9 @@ pre { background: var(--code); border-radius: 8px; padding: 8px 10px; margin: 6p
 .composer textarea { resize: none; min-height: 38px; max-height: 200px; overflow-y: hidden; }
 .attach { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; flex: none; }
 .option { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.options { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.small-link { font-size: 13px; }
+.context-note { margin-left: 6px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chips:empty { display: none; }
 .chip { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 2px 4px 2px 10px; }
