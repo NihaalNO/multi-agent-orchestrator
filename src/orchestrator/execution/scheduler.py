@@ -62,7 +62,11 @@ class DagScheduler:
         idempotency_key: str | None = None,
         approvals: Mapping[str, str] | None = None,
         deadline_s: float | None = None,
+        prior: Mapping[str, TaskResult] | None = None,
     ) -> ExecutionReport:
+        """Run ``plan``. ``prior`` holds results of an earlier run of the same plan (e.g. before
+        an approval): tasks that already succeeded keep their result and are not re-run; their
+        outputs feed downstream ``$ref``s as usual. Everything else runs again."""
         unbound = [t.task_id for t in plan.tasks if t.tool_id is None]
         if unbound:
             raise ValueError(f"plan has unbound tasks (route it first): {unbound}")
@@ -127,6 +131,16 @@ class DagScheduler:
             for task_id in list(waiting):
                 terminal(task_id, TaskStatus.CANCELLED, code, message)
             waiting.clear()
+
+        reused = []
+        for task_id, earlier in (prior or {}).items():
+            if task_id in waiting and earlier.status == TaskStatus.SUCCEEDED:
+                del waiting[task_id]
+                settle(task_id, earlier)
+                reused.append(task_id)
+        if reused:
+            self._audit.record("execution.resumed", request_id=run.request_id, execution_id=run.execution_id,
+                               reused=sorted(reused))
 
         try:
             async with asyncio.timeout(deadline_s):

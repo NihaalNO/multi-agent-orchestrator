@@ -10,11 +10,10 @@ deterministic Python validates, authorizes and executes them.
 
 ## Status
 
-Phases 01 (foundation), 02 (dynamic tool registry), 04 (permissions), 05 (parallel execution)
-and 06 (conflict resolution) are complete; Phase 03 (planning and capability routing) is complete
-apart from a live web-search backend. All ten essential test scenarios from the spec pass. Next is
-Phase 07: wiring everything behind one orchestrator facade and a `POST /requests` endpoint. See
-the roadmap for details and open decisions.
+Phases 01–07 are complete: the full request lifecycle runs behind `POST /requests`, and all ten
+essential test scenarios from the spec pass. Still open: a live web-search backend, a live run of
+the Claude planner (needs an API key), and Phase 08 (documentation and deployment). See the
+roadmap for details.
 
 ## Planner configuration
 
@@ -66,6 +65,25 @@ $env:ORCH_POLICY_PATH = "config\policy.json"; $env:ORCH_PRINCIPALS_PATH = "confi
 ```
 
 Clients send `Authorization: Bearer <api key>`. `/health` is the only public endpoint.
+
+## Making requests
+
+Put input files in the upload folder (`ORCH_FILE_TOOL_ROOT`, default `data/uploads`), then:
+
+```powershell
+$h = @{ Authorization = "Bearer <your api key>"; "Idempotency-Key" = "report-001" }
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/requests -Headers $h -ContentType "application/json" -Body '{"text": "Read sales.csv and calculate its average revenue using Python"}'
+```
+
+The response is the request record: `state` (`completed`, `failed`, `awaiting_approval`,
+`rejected`), the plan and routing decisions, the execution report with resolved values and
+conflicts, `uncertainty` caveats, a plain-text `summary` and per-stage timings. Re-sending the same
+`Idempotency-Key` returns the same request instead of running it again.
+
+If a sensitive operation needs approval the response is `202` with `pending_approvals`. An
+approver calls `POST /approvals/{approval_id}/approve`; the requester then calls
+`POST /requests/{request_id}/resume`, which runs only what has not finished yet.
+`GET /admin/metrics` (admin role) reports per-tool success rates, retries and latency.
 
 ## Adding a tool
 

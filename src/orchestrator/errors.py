@@ -158,3 +158,17 @@ class ToolTimeoutError(ToolExecutionError):
 
 class ExecutionCancelledError(OrchestratorError):
     code = "execution_cancelled"
+
+
+# --- Requests ---------------------------------------------------------------------------
+
+
+class RequestNotFoundError(OrchestratorError):
+    code = "request_not_found"
+
+
+class InvalidRequestStateError(OrchestratorError):
+    """The operation does not apply to the request in its current state (e.g. resuming a
+    request that is not awaiting approval, or one that is already running)."""
+
+    code = "invalid_request_state"

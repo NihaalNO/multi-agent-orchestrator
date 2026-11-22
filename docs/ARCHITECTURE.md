@@ -193,7 +193,7 @@ infinite or pointless retry loops (spec §6.1).
 
 | Spec stage | Where it happens |
 |---|---|
-| 1 Request intake | API layer → `OrchestratorRequest` |
+| 1 Request intake | `POST /requests` → `Orchestrator.submit()` (validation, idempotency key, request record) |
 | 2 Intent analysis, 3 Decomposition | `Planner.plan()` (LLM or rule-based) |
 | 4 Capability discovery, 5 Tool selection | `CapabilityRouter.route()` (via `RoutingService.plan_and_route()`) |
 | 6 Permission validation | `PermissionPolicy.check()` at plan time **and** before each invoke |
@@ -201,7 +201,7 @@ infinite or pointless retry loops (spec §6.1).
 | 8 Tool execution | `DagScheduler.execute()` → `ExecutionEngine.run_task()` |
 | 9 Result validation | engine output-schema check; failures and their skipped dependents are reported per task |
 | 10 Conflict resolution | `ConflictResolver.resolve(plan, report)` → conflicts, reconciled values, uncertainty notes |
-| 11 Aggregation, 12 Response | `Orchestrator` builds `ExecutionReport` (+ optional LLM summary) |
+| 11 Aggregation, 12 Response | `Orchestrator` stores a `RequestRecord`: plan, routing, authorization, resolved report, summary, stage timings |
 
 ---
 
@@ -228,6 +228,10 @@ infinite or pointless retry loops (spec §6.1).
 | What gets compared | Only tasks the planner put in the same `compare_group`, identical calls, and URL-keyed result lists | Comparing arbitrary outputs of different tasks would invent conflicts between answers to different questions. The planner marks deliberate cross-checks; it cannot use the field to affect permissions or tool choice. |
 | Resolution policy order | normalization → majority (≥3 sources) → recency → source priority, configurable | Cheapest certain fix first; registered reliability is the weakest evidence, so it comes last and needs a clear margin (0.2). |
 | Unresolvable conflicts | Escalated with every candidate; the value is reported as `None` | Spec §2.5: never silently fabricate a resolution. `ExecutionReport.requires_review` tells the caller a human should look. |
+| Request records | In-memory `RequestStore`; one record per request, updated in place on resume | Enough for a single process and the MVP; a database is the swap point when restarts must not lose requests. |
+| Metrics source | Derived from audit events by an `AuditSink` | One source of truth: metrics can never disagree with the audit log. |
+| Result summary | Deterministic text built from the report | Reproducible and testable; an LLM summary can be layered on later without changing the record shape. |
+| Default web search | Not registered without a real backend | A tool that always returns nothing would turn "not searched" into "nothing found". The gap is reported as a caveat instead. |
 | Approval timing | Approvals are requested and consumed at execution time, with resolved arguments | The approved digest must match the exact arguments, which may depend on upstream outputs unknown at plan time. |
 
 ---
@@ -260,7 +264,8 @@ src/orchestrator/
   execution/                engine, DAG scheduler, $ref resolution,
                             idempotency store, resource locks        (Phase 05)
   resolution/               conflict detection + resolution policies  (Phase 06)
-  core.py                   Orchestrator facade                       (Phase 07)
+  core.py                   Orchestrator facade, request store        (Phase 07)
+  observability/metrics.py  latency/reliability metrics from audit events
   api/app.py                FastAPI application
 tests/                      pytest, mirrors src layout
 docs/                       SPEC, ARCHITECTURE, ROADMAP

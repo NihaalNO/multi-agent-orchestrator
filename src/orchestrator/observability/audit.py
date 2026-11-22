@@ -105,6 +105,9 @@ class AuditLog:
     def sinks(self) -> list[AuditSink]:
         return list(self._sinks)
 
+    def add_sink(self, sink: AuditSink) -> None:
+        self._sinks.append(sink)
+
     def record(
         self,
         kind: str,

@@ -2,8 +2,13 @@
 
 Every endpoint except ``/health`` requires ``Authorization: Bearer <api key>``; the key maps to
 a ``Principal`` (see ``api/auth.py``). Admin endpoints additionally require the admin role,
-approval decisions the approver role. ``POST /requests`` arrives with the orchestrator facade
-in Phase 07.
+approval decisions the approver role.
+
+Request lifecycle over HTTP:
+  POST /requests                 plan, route, authorize, execute, resolve; returns the record
+  GET  /requests/{id}            the record (owner or admin)
+  POST /requests/{id}/resume     after approvals are decided, run what is left
+Status codes: 200 completed/failed, 202 awaiting approval, 4xx/5xx rejected (body is the record).
 """
 
 # No `from __future__ import annotations` here: FastAPI must resolve the closure-local
@@ -16,13 +21,20 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from orchestrator.core import Orchestrator, RequestRecord, RequestState, register_default_tools
+from orchestrator.observability import InMemoryAuditSink, JsonlAuditSink, MetricsSink
+
 from orchestrator import __version__
 from orchestrator.api.auth import ApiKeyAuthenticator
 from orchestrator.config import Settings
 from orchestrator.contracts import ApprovalStatus, Principal, ToolDescriptor
 from orchestrator.errors import (
     ApprovalRequiredError,
+    ConfigurationError,
     DuplicateToolError,
+    InvalidRequestStateError,
+    PlannerUnavailableError,
+    RequestNotFoundError,
     NoMatchingToolError,
     OperationNotFoundError,
     OrchestratorError,
@@ -45,12 +57,17 @@ _STATUS_BY_ERROR: list[tuple[type[OrchestratorError], int]] = [
     (ToolNotFoundError, 404),
     (OperationNotFoundError, 404),
     (ApprovalNotFoundError, 404),
+    (RequestNotFoundError, 404),
     (PermissionDeniedError, 403),
     (DuplicateToolError, 409),
     (ApprovalRequiredError, 409),
+    (InvalidRequestStateError, 409),
     (SchemaValidationError, 422),
     (NoMatchingToolError, 422),
+    (PlannerUnavailableError, 503),
+    (ConfigurationError, 503),
 ]
+_STATUS_BY_CODE = {cls.code: status for cls, status in _STATUS_BY_ERROR}
 
 
 def _status_for(exc: OrchestratorError) -> int:
@@ -68,6 +85,22 @@ class DecisionBody(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
+class SubmitBody(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+    files: list[str] = Field(default_factory=list, max_length=50)
+    allow_partial: bool = False
+
+
+def _record_response(record: RequestRecord) -> JSONResponse:
+    if record.state == RequestState.REJECTED:
+        status = _STATUS_BY_CODE.get(record.error.code if record.error else "", 422)
+    elif record.state == RequestState.AWAITING_APPROVAL:
+        status = 202
+    else:
+        status = 200
+    return JSONResponse(status_code=status, content=record.public())
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -76,12 +109,26 @@ def create_app(
     authenticator: ApiKeyAuthenticator | None = None,
     permissions: PermissionManager | None = None,
     approvals: ApprovalManager | None = None,
+    orchestrator: Orchestrator | None = None,
+    metrics: MetricsSink | None = None,
+    register_defaults: bool | None = None,
 ) -> FastAPI:
+    """Everything is injectable for tests. Defaults come from ``Settings``. Built-in tools are
+    registered at startup when the app creates its own registry (``register_defaults``)."""
     # Explicit `is None` checks: an empty ToolRegistry is falsy (it defines __len__).
     if settings is None:
         settings = Settings.from_env()
+    if metrics is None:
+        metrics = MetricsSink()
+        if audit is not None:
+            audit.add_sink(metrics)
     if audit is None:
-        audit = AuditLog()
+        sinks = [InMemoryAuditSink(), metrics]
+        if settings.audit_log_path:
+            sinks.append(JsonlAuditSink(settings.audit_log_path))
+        audit = AuditLog(*sinks)
+    if register_defaults is None:
+        register_defaults = registry is None
     if registry is None:
         registry = ToolRegistry(audit, health_check_timeout_s=settings.health_check_timeout_s)
     if authenticator is None:
@@ -95,8 +142,13 @@ def create_app(
             audit, approver_role=settings.approver_role, ttl=timedelta(seconds=settings.approval_ttl_s)
         )
 
+    if orchestrator is None:
+        orchestrator = Orchestrator.build(settings, registry, permissions, approvals, audit)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if register_defaults:
+            await register_default_tools(registry, settings)
         yield
         await registry.aclose()
 
@@ -106,6 +158,8 @@ def create_app(
     app.state.audit = audit
     app.state.permissions = permissions
     app.state.approvals = approvals
+    app.state.orchestrator = orchestrator
+    app.state.metrics = metrics
 
     @app.exception_handler(OrchestratorError)
     async def _orchestrator_error(_: Request, exc: OrchestratorError) -> JSONResponse:
@@ -163,6 +217,28 @@ def create_app(
     async def capabilities(principal: PrincipalDep, available_only: bool = True) -> dict[str, list[str]]:
         return registry.capabilities(available_only=available_only)
 
+    # ------------------------------------------------------------------ requests
+
+    @app.post("/requests")
+    async def submit_request(
+        body: SubmitBody,
+        principal: PrincipalDep,
+        idempotency_key: Annotated[str | None, Header(max_length=200)] = None,
+    ) -> JSONResponse:
+        record = await orchestrator.submit(
+            body.text, principal, files=tuple(body.files),
+            idempotency_key=idempotency_key, allow_partial=body.allow_partial,
+        )
+        return _record_response(record)
+
+    @app.get("/requests/{request_id}")
+    async def get_request(request_id: str, principal: PrincipalDep) -> dict[str, Any]:
+        return orchestrator.get(request_id, principal).public()
+
+    @app.post("/requests/{request_id}/resume")
+    async def resume_request(request_id: str, principal: PrincipalDep) -> JSONResponse:
+        return _record_response(await orchestrator.resume(request_id, principal))
+
     # ------------------------------------------------------------------ approvals
 
     @app.get("/approvals")
@@ -197,6 +273,10 @@ def create_app(
     async def disable_tool(tool_id: str, principal: AdminDep) -> dict[str, Any]:
         audit.record("admin.tool_disable", tool_id=tool_id, user_id=principal.user_id)
         return _descriptor_json(await registry.set_enabled(tool_id, False))
+
+    @app.get("/admin/metrics")
+    async def get_metrics(principal: AdminDep) -> dict[str, Any]:
+        return metrics.snapshot()
 
     @app.post("/admin/tools/health-check")
     async def health_check(principal: AdminDep, tool_id: str | None = None) -> dict[str, str]:

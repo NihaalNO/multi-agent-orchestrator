@@ -78,7 +78,7 @@ spec §13.12. Update it in the same commit as the work it describes.
 | Whole-plan deadline and caller cancellation, propagated into tools | ✅ | scheduler; Python tool kills its child process on cancel |
 | Idempotency keys for non-idempotent operations | ✅ | `IdempotencyStore` (in-memory, TTL) |
 | Per-resource write locks | ✅ | `ResourceLocks` |
-| Resuming an execution after approval without re-running other tasks | ⬜ | re-submitting re-runs idempotent tasks; non-idempotent ones dedupe via idempotency key. Execution state store arrives with the facade (Phase 07). |
+| Resuming an execution after approval without re-running other tasks | ✅ | done in Phase 07 (`prior=` results) |
 
 ## Phase 06 — Conflict Resolution  ✅
 
@@ -100,12 +100,26 @@ spec §13.12. Update it in the same commit as the work it describes.
 | Automatic re-run / extra verification to break a tie | ⬜ | escalates instead; re-planning belongs to the orchestrator facade (Phase 07) |
 | Human sign-off workflow for escalated conflicts | ⬜ | flagged via `requires_review`; an approval-style flow can reuse Phase 04 approvals if needed |
 
-## Phase 07 — Integration and Testing  ⬜
+## Phase 07 — Integration and Testing  ✅
 
-- ⬜ `Orchestrator` facade wiring the 12-stage lifecycle
-- ⬜ `POST /requests` endpoint
-- ⬜ End-to-end MVP demo (CSV average + web benchmark)
-- ⬜ All 10 essential test scenarios from spec §9
+| Item | Status | Where |
+|---|---|---|
+| `Orchestrator` facade running the 12-stage lifecycle | ✅ | `core.py` (`submit`, `resume`, `get`) |
+| Request records with state, plan, routing, authorization, report, summary, stage timings | ✅ | `RequestRecord`, in-memory `RequestStore` |
+| `POST /requests`, `GET /requests/{id}`, `POST /requests/{id}/resume` | ✅ | `api/app.py`; 200 / 202 / error status codes |
+| Client idempotency (`Idempotency-Key` header): same key → same request, no re-planning | ✅ | `RequestStore.by_key` |
+| Resume after approval without re-running finished tasks | ✅ | `DagScheduler.execute(prior=...)` (closes the Phase 05 gap) |
+| Rejections (no tool, denied, planner down) recorded with structured errors; nothing executed | ✅ | `RequestState.REJECTED` |
+| Requests never left stuck in `running` (planner bug, cancellation) | ✅ | facade error handling |
+| Deterministic plain-text summary of the outcome | ✅ | `build_summary` |
+| Latency and reliability measurement | ✅ | `MetricsSink` (per-tool success rate, retries, p50/p95), `GET /admin/metrics`, stage timings per request |
+| Built-in tools registered at startup | ✅ | `register_default_tools` (web search only with a real backend) |
+| Complete workflows, permission violations, concurrency, conflicts, unavailable tools, partial failures | ✅ | `tests/test_orchestrator.py` + earlier phase tests; all 10 spec scenarios pass |
+| Smoke test against a real `uvicorn` server | ✅ | done manually (not automated) |
+| Live Claude planner run | ⛔ | needs an Anthropic API key; only tested with a fake client |
+| LLM-written result summary | ⬜ | deterministic summary for now; a Claude summarizer can be added behind the same field |
+| File upload endpoint | ⬜ | files are placed in `ORCH_FILE_TOOL_ROOT` out of band |
+| Persistent request store | ⬜ | in-memory: records are lost on restart |
 
 ## Phase 08 — Documentation and Deployment  ⬜
 

@@ -7,8 +7,10 @@ from orchestrator.observability.audit import (
     LoggingAuditSink,
     redact,
 )
+from orchestrator.observability.metrics import MetricsSink
 
 __all__ = [
+    "MetricsSink",
     "AuditEvent",
     "AuditLog",
     "AuditSink",
