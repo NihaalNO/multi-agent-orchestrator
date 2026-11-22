@@ -23,6 +23,10 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-deps .
 
+# Python sandbox: CPython for WebAssembly, downloaded and checked against a pinned SHA-256.
+COPY scripts/fetch_python_wasm.py ./scripts/
+RUN python scripts/fetch_python_wasm.py --dest /opt/wasi
+
 USER orch
 
 ENV ORCH_ENVIRONMENT=production \
@@ -30,7 +34,9 @@ ENV ORCH_ENVIRONMENT=production \
     ORCH_AUDIT_LOG_PATH=/data/audit/audit.jsonl \
     ORCH_STATE_PATH=/data/state/orchestrator.db \
     ORCH_POLICY_PATH=/config/policy.json \
-    ORCH_PRINCIPALS_PATH=/config/principals.json
+    ORCH_PRINCIPALS_PATH=/config/principals.json \
+    ORCH_PYTHON_SANDBOX=wasm \
+    ORCH_PYTHON_WASM_DIR=/opt/wasi/python-3.15.2
 
 VOLUME ["/data"]
 EXPOSE 8000

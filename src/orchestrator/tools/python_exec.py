@@ -1,20 +1,16 @@
 """Python Execution tool.
 
-Runs a code snippet in a **separate interpreter process**:
+Two backends, chosen by ``ORCH_PYTHON_SANDBOX`` (see ``build_python_tool``):
 
-* ``python -I`` (isolated mode: ignores ``PYTHON*`` env vars and user site-packages)
-* fresh temporary working directory, deleted afterwards
-* minimal environment (no inherited secrets such as API keys)
-* wall-clock timeout, after which the process is killed
-* capped stdout/stderr
+* **WebAssembly** (``IsolationLevel.WASM``, preferred): CPython compiled for WASI runs in wasmtime
+  with no host files or network, a memory cap and a runtime-enforced time limit. Standard library
+  only. See ``orchestrator.tools.wasm_python``.
+* **Subprocess** (``IsolationLevel.SUBPROCESS``, fallback): ``python -I`` in a fresh temporary
+  folder with a minimal environment (no inherited secrets), a wall-clock timeout and capped output.
+  NOT a security sandbox: code can read files the OS user can read and use the network.
 
-The snippet receives a JSON value as ``inputs`` and must assign a JSON-serialisable value to
-``result``. Anything printed is captured as ``stdout``.
-
-LIMITATION: a subprocess is not a security sandbox. Code can still read files the OS user can
-read and open network connections. Container isolation (``IsolationLevel.CONTAINER``) is the
-planned upgrade. Permission policy should therefore treat this tool's ``execute`` access as
-privileged.
+Either way the snippet receives a JSON value as ``inputs`` and must assign a JSON-serialisable value
+to ``result``. Anything printed is captured as ``stdout``.
 """
 
 from __future__ import annotations
@@ -25,6 +21,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+from pathlib import Path
 from typing import Any
 
 from orchestrator.contracts import (
@@ -35,12 +33,16 @@ from orchestrator.contracts import (
     OperationSpec,
     ToolSpec,
 )
-from orchestrator.errors import ToolExecutionError
+from orchestrator.errors import ConfigurationError, ToolExecutionError
 from orchestrator.tools.base import ToolAdapter
+from orchestrator.tools.wasm_python import WasmPython, wasm_unavailable_reason
 
 MAX_CODE_CHARS = 20_000
 MAX_OUTPUT_BYTES = 256 * 1024
 _RESULT_MARKER = "\x1e__ORCH_RESULT__"
+# Printed output kept per run (its end). Well under MAX_OUTPUT_BYTES, which must also hold
+# the JSON-encoded result; a result too large for the cap is still reported as an error.
+_KEEP_STDOUT_CHARS = 64_000
 
 # Executed by the child interpreter. Reads {"code", "inputs"} from stdin, runs the code with
 # stdout redirected, then writes one marker-prefixed JSON line to the real stdout.
@@ -54,25 +56,29 @@ try:
     with contextlib.redirect_stdout(buf):
         exec(compile(payload["code"], "<task>", "exec"), ns)
 except BaseException:
-    status = {"ok": False, "error": traceback.format_exc(limit=5)}
-out = {"stdout": buf.getvalue(), **status}
+    status = {"ok": False, "error": traceback.format_exc(limit=5)[-4000:]}
+# Keep only the end of long printed output so the result line always fits under the output cap.
+printed = buf.getvalue()
+if len(printed) > KEEP:
+    printed = f"[... {len(printed) - KEEP} earlier characters of output dropped]\n" + printed[-KEEP:]
+out = {"stdout": printed, **status}
 if status["ok"]:
     try:
         json.dumps(ns["result"])
         out["result"] = ns["result"]
     except (TypeError, ValueError) as exc:
-        out = {"stdout": buf.getvalue(), "ok": False, "error": f"result is not JSON-serialisable: {exc}"}
+        out = {"stdout": printed, "ok": False, "error": f"result is not JSON-serialisable: {exc}"}
 sys.__stdout__.write(MARKER + json.dumps(out))
-""".replace("MARKER", repr(_RESULT_MARKER))
+""".replace("MARKER", repr(_RESULT_MARKER)).replace("KEEP", str(_KEEP_STDOUT_CHARS))
 
 SPEC = ToolSpec(
     tool_id="python_exec",
     name="Python Execution",
     description=(
-        "Runs a short Python snippet in a separate process. The snippet reads the variable "
-        "`inputs` and must assign its answer to `result` (JSON-serialisable). It runs in an empty "
-        "temporary folder and cannot open uploaded files: load data with a file tool first and pass "
-        "it in through `inputs`."
+        "Runs a short Python snippet in an isolated sandbox. The snippet reads the variable "
+        "`inputs` and must assign its answer to `result` (JSON-serialisable). Only the Python "
+        "standard library is available (no numpy or pandas). It cannot open uploaded files or use "
+        "the network: load data with a file tool first and pass it in through `inputs`."
     ),
     reliability=0.95,
     constraints=ExecutionConstraints(
@@ -166,12 +172,39 @@ def _child_env() -> dict[str, str]:
     return env
 
 
+_WASM_SPEC = SPEC.model_copy(update={
+    "constraints": SPEC.constraints.model_copy(update={"isolation": IsolationLevel.WASM}),
+})
+
+
 class PythonExecTool(ToolAdapter):
     spec = SPEC
 
-    def __init__(self, *, timeout_s: float = 10.0, python: str | None = None) -> None:
+    def __init__(self, *, timeout_s: float = 10.0, python: str | None = None,
+                 sandbox: WasmPython | None = None) -> None:
         self._timeout = timeout_s
         self._python = python or sys.executable
+        self._sandbox = sandbox
+        if sandbox is not None:
+            self.spec = _WASM_SPEC
+
+    @property
+    def isolation(self) -> IsolationLevel:
+        return self.spec.constraints.isolation
+
+    async def health_check(self) -> bool:
+        return self._sandbox is None or await asyncio.to_thread(self._sandbox.ready, 60)
+
+    async def _run_wasm(self, payload: bytes) -> tuple[int | None, bytes, bytes]:
+        assert self._sandbox is not None
+        # Runs in a worker thread. If this task is cancelled the thread finishes on its own, but the
+        # runtime's time limit bounds it, so nothing keeps running past ``timeout_s``.
+        res = await asyncio.to_thread(
+            self._sandbox.run, ["python", "-I", "-S", "-c", _RUNNER], payload, self._timeout)
+        if res.timed_out:
+            raise self._timed_out()
+        code = res.exit_code if res.exit_code is not None else -1
+        return code, res.stdout, res.stderr
 
     def _timed_out(self) -> ToolExecutionError:
         # Re-running the same code would time out again, so this is not recoverable.
@@ -226,12 +259,16 @@ class PythonExecTool(ToolAdapter):
 
     async def op_run(self, args: dict[str, Any], ctx: ExecutionContext) -> dict[str, Any]:
         payload = json.dumps({"code": repair_escaped_code(args["code"]), "inputs": args.get("inputs")}).encode()
+        if self._sandbox is not None:
+            return self._parse(*await self._run_wasm(payload))
         with tempfile.TemporaryDirectory(prefix="orch_py_", ignore_cleanup_errors=True) as workdir:
             try:
                 returncode, stdout, stderr = await self._run_async(payload, workdir)
             except NotImplementedError:
                 returncode, stdout, stderr = await self._run_threaded(payload, workdir)
+        return self._parse(returncode, stdout, stderr)
 
+    def _parse(self, returncode: int | None, stdout: bytes, stderr: bytes) -> dict[str, Any]:
         text = stdout[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
         marker_at = text.rfind(_RESULT_MARKER)
         if returncode != 0 or marker_at < 0:
@@ -250,3 +287,30 @@ class PythonExecTool(ToolAdapter):
                 details={"traceback": out.get("error", "")[-4000:], "stdout": out.get("stdout", "")[-2000:]},
             )
         return {"result": out.get("result"), "stdout": out.get("stdout", "")[-MAX_OUTPUT_BYTES:]}
+
+
+_SHARED: dict[tuple[str, int], WasmPython] = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_wasm_python(wasm_dir: Path, memory_mb: int) -> WasmPython:
+    """One compiled sandbox per (folder, memory cap) per process: compiling python.wasm takes about
+    a second and a half, and runs are independent instances anyway."""
+    key = (str(Path(wasm_dir).resolve()), memory_mb)
+    with _SHARED_LOCK:
+        if key not in _SHARED:
+            _SHARED[key] = WasmPython(wasm_dir, memory_mb=memory_mb, max_output_bytes=MAX_OUTPUT_BYTES)
+        return _SHARED[key]
+
+
+def build_python_tool(*, sandbox: str, wasm_dir: Path, timeout_s: float, memory_mb: int) -> PythonExecTool:
+    """``sandbox``: "wasm" (required: raises ConfigurationError if unavailable), "subprocess", or
+    "auto" (WebAssembly when available, otherwise the subprocess fallback)."""
+    if sandbox == "subprocess":
+        return PythonExecTool(timeout_s=timeout_s)
+    reason = wasm_unavailable_reason(wasm_dir)
+    if reason is None:
+        return PythonExecTool(timeout_s=timeout_s, sandbox=shared_wasm_python(wasm_dir, memory_mb))
+    if sandbox == "wasm":
+        raise ConfigurationError(f"ORCH_PYTHON_SANDBOX=wasm but the sandbox is unavailable: {reason}")
+    return PythonExecTool(timeout_s=timeout_s)

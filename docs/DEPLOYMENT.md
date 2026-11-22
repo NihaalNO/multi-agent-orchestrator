@@ -66,9 +66,13 @@ All settings are environment variables. Invalid values stop the server at startu
 | `ORCH_EXECUTION_DEADLINE_S` | unset | time limit for a whole plan; unfinished tasks are cancelled |
 | `ORCH_FILE_TOOL_ROOT` | `data/uploads` | the only folder the file tool can read |
 | `ORCH_PYTHON_EXEC_TIMEOUT_S` | `10` | Python snippets are killed after this |
+| `ORCH_PYTHON_SANDBOX` | `auto` | `auto`: WebAssembly sandbox when available, else a plain subprocess (startup warning); `wasm`: refuse to start without the sandbox (recommended in production); `subprocess`: never sandbox |
+| `ORCH_PYTHON_WASM_DIR` | `data/wasi/python-3.15.2` | CPython WASI build (`python.wasm` + `lib/`), fetched and checksum-verified by `scripts/fetch_python_wasm.py` |
+| `ORCH_PYTHON_MEMORY_MB` | `256` | memory cap for sandboxed Python (WebAssembly only) |
 | `ORCH_UPLOAD_MAX_BYTES` | `5242880` (5 MB) | largest accepted upload; matches the file tool's read limit, since a bigger file could not be read |
 | `ORCH_UPLOAD_EXTENSIONS` | `csv,txt,md,json` | comma-separated file types accepted by `PUT /files`; text types must be UTF-8 |
-| `ORCH_SEARCH_BACKEND` | `none` | `none`: no web search tool. `anthropic`: Claude's server-side web search. `gemini`: Gemini with Google Search grounding. Both are billed per search by the provider |
+| `ORCH_SEARCH_BACKEND` | `none` | `none`: no web search tool. `anthropic`: Claude's server-side web search. `gemini`: Gemini with Google Search grounding. `tavily`: Tavily's search API (key in `TAVILY_API_KEY`, from https://app.tavily.com/). All are billed per search by the provider |
+| `ORCH_TAVILY_SEARCH_DEPTH` | `basic` | Tavily only: `basic` (1 credit per search), `advanced` (2 credits, more relevant chunks), `fast`, `ultra-fast` |
 | `ORCH_SEARCH_MODEL` | provider default | model used for web search (`claude-opus-5-5` / `gemini-3.8-flash`) |
 | `ORCH_SEARCH_MAX_USES` | `3` | searches Claude may run for one web search call (1–10; Anthropic only) |
 | `ORCH_LLM_PROVIDER` | `anthropic` | `anthropic` (Claude), `gemini` (Google Gemini), `groq`, `ollama` or `rule_based` (offline, deterministic) |
@@ -78,7 +82,7 @@ All settings are environment variables. Invalid values stop the server at startu
 | `ORCH_LLM_MAX_OUTPUT_TOKENS` | `4096` | Groq/Ollama output budget per plan, reasoning included. Groq counts it against your tokens-per-minute limit (8,000 on its on-demand tier), so prompt + budget must stay under that |
 | `ORCH_LLM_JSON_MODE` | `auto` | Groq/Ollama output mode. `auto`: schema-enforced output where the provider supports it for the model (Groq: gpt-oss and a few others; local Ollama: any model), otherwise JSON mode with the schema in the instructions. `json_schema` / `json_object` force one |
 | `ORCH_LLM_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` (Anthropic only) |
-| `ORCH_LLM_API_KEY` | unset | key for the planner's provider (and web search when it uses the same provider). Otherwise each SDK reads its own: `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ant auth login`, or `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Google's SDK prefers `GOOGLE_API_KEY` if both are set), `GROQ_API_KEY`, `OLLAMA_API_KEY` (Ollama's cloud only) |
+| `ORCH_LLM_API_KEY` | unset | key for the planner's provider (and web search when it uses the same provider). Otherwise each SDK reads its own: `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ant auth login`, or `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Google's SDK prefers `GOOGLE_API_KEY` if both are set), `GROQ_API_KEY`, `OLLAMA_API_KEY` (Ollama's cloud only). Tavily search always uses `TAVILY_API_KEY` |
 | `ORCH_POLICY_PATH` | unset | grants file; unset → everything denied |
 | `ORCH_PRINCIPALS_PATH` | unset | API-key principals; unset → nobody authenticates |
 | `ORCH_ADMIN_ROLE` | `admin` | role name for administration |
@@ -139,10 +143,10 @@ PostgreSQL and Redis), deliberately deferred until it is needed.
 - [ ] Every API key generated with `hash-key --generate`; only hashes stored; placeholder hashes removed.
 - [ ] Grants are minimal; sensitive operations go through approvers who are not the requesters.
 - [ ] `.env` and the real `config/*.json` are not committed (both are gitignored).
-- [ ] **The Python tool is not a security sandbox.** It runs code in a separate process with a time
-      limit, a temporary folder and no inherited secrets, but that code can still read files the
-      service account can read and use the network. Grant `python_exec` only to trusted users, or
-      run it in a container (`IsolationLevel.CONTAINER` is reserved for that).
+- [ ] **Python runs in the WebAssembly sandbox** (`ORCH_PYTHON_SANDBOX=wasm`, set in the Docker
+      image): no host files except a read-only standard library, no network, memory and time caps.
+      With `subprocess` (or `auto` when the sandbox is missing) code can read files the service
+      account can read and use the network; grant `python_exec` only to trusted users then.
 - [ ] The file tool is limited to `ORCH_FILE_TOOL_ROOT`; keep nothing sensitive there.
 - [ ] The chat page (`/ui`) is public static content; it needs a valid API key for everything it
       does. Serve it over TLS like the API, since users paste their key into it.

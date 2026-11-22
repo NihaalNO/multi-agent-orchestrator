@@ -20,9 +20,9 @@ Remaining before a production rollout:
 | Item | State | Needs |
 |---|---|---|
 | Live run of a real planner | ✅ | Groq (`openai/gpt-oss-120b`) through the API and the chat page, 2026-11-22; Anthropic still blocked on account credits |
-| Live web search run | ⛔ | built for both providers (`ORCH_SEARCH_BACKEND=anthropic` / `gemini`); needs a working key for either (Groq has no search backend) |
+| Live web search run | ⛔ | built for three backends (`ORCH_SEARCH_BACKEND=anthropic` / `gemini` / `tavily`); needs a working key for one of them. Tavily works alongside the Groq planner |
 | Multi-instance deployment | ⬜ | durable state is done (SQLite, single instance); scaling out needs a shared database + distributed lock, when one instance is no longer enough |
-| Stronger Python isolation | ⬜ | planned in Phase 09 |
+| Stronger Python isolation | ✅ | WebAssembly sandbox (Phase 09) |
 | LLM-written summaries, OpenTelemetry export | ⬜ | optional extensions (spec §11); MCP tools and the container sandbox are now Phases 13 and 09 |
 
 ---
@@ -168,11 +168,11 @@ deterministic code decides, checks permissions and records argument hashes. The 
 on that so every answer is linked to its evidence, can be replayed, and runs under rules that can be
 tested before they change. Phase 09 is a prerequisite; Phase 10 is the main differentiator.
 
-## Phase 09 — Foundations  ⬜
+## Phase 09 — Foundations  🟡
 
 | Item | Status | Notes |
 |---|---|---|
-| Real Python sandbox | ⬜ | container or WebAssembly execution (`IsolationLevel.CONTAINER`): no host file access, no network unless granted, CPU/memory limits. Required before untrusted users get `python_exec` |
+| Real Python sandbox | ✅ | WebAssembly (CPython 3.15 for WASI in wasmtime, `IsolationLevel.WASM`): no host files or network, memory and time caps; `tests/test_wasm_sandbox.py`, CI fetches the build on Linux and Windows, Docker image requires it. Verified live with Groq through the chat. Standard library only |
 | Live progress in the chat | ⬜ | stream plan, step and approval events (server-sent events) instead of one long wait |
 | Conversation memory within permissions | ⬜ | follow-ups refer to earlier results ("now double it") via `$ref` to a previous request's outputs; only the user's own requests, and every step is authorized again |
 

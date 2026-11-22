@@ -36,12 +36,20 @@ class Settings(BaseModel):
     # Tools
     file_tool_root: Path = Path("data/uploads")
     python_exec_timeout_s: float = Field(default=10.0, gt=0, le=120)
+    # Python sandbox. "auto": WebAssembly when wasmtime and python.wasm are available, otherwise a
+    # plain subprocess (not a security boundary). "wasm": refuse to start without the sandbox.
+    python_sandbox: Literal["auto", "wasm", "subprocess"] = "auto"
+    python_wasm_dir: Path = Path("data/wasi/python-3.15.2")
+    python_memory_mb: int = Field(default=256, ge=16, le=4096)
     # Uploads (PUT /files). Default cap = the file tool's read cap: a bigger file could not be read.
     upload_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1, le=1024 * 1024 * 1024)
     upload_extensions: str = Field(default="csv,txt,md,json", description="Comma-separated accepted file types.")
     # "none": no web search tool is registered. "anthropic": Claude's server-side web search.
     # "gemini": Gemini with Google Search grounding. Both are billed per search by their provider.
-    search_backend: Literal["none", "anthropic", "gemini"] = "none"
+    # "tavily": Tavily's search API (key in TAVILY_API_KEY), 1 credit per basic search.
+    search_backend: Literal["none", "anthropic", "gemini", "tavily"] = "none"
+    tavily_search_depth: Literal["basic", "advanced", "fast", "ultra-fast"] = Field(
+        default="basic", description="Tavily search depth; advanced costs 2 credits per search.")
     search_model: str | None = Field(default=None, description="Model for web search; unset → provider default.")
     search_max_uses: int = Field(default=3, ge=1, le=10, description="Web searches Claude may run per call.")
 

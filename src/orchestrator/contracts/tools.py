@@ -50,6 +50,7 @@ class Transport(StrEnum):
 class IsolationLevel(StrEnum):
     NONE = "none"
     SUBPROCESS = "subprocess"
+    WASM = "wasm"            # WebAssembly sandbox: no host files or network, memory and time caps
     CONTAINER = "container"
 
 

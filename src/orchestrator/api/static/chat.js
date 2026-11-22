@@ -70,6 +70,7 @@ const PROVIDER_KEYS = [
   [/^gsk_/, "Groq"],
   [/^sk-ant-/, "Anthropic"],
   [/^AIza/, "Google Gemini"],
+  [/^tvly-/, "Tavily"],
   [/^sk-(proj-)?[A-Za-z0-9_-]{20,}$/, "OpenAI"],
 ];
 
@@ -179,11 +180,35 @@ function highlights(record) {
     if ("result" in o) value = formatValue(o.result);
     else if (typeof o.answer === "string") value = o.answer;
     else if (Array.isArray(o.rows)) value = `${o.rows.length} rows from ${o.path || "file"}`;
-    else if (Array.isArray(o.results)) value = `${o.results.length} results`;
+    else if (Array.isArray(o.results)) {
+      box.append(el("div", { class: "item" }, el("span", { class: "label", text: r.task_id }),
+        el("span", { class: "muted", text: `${o.results.length} web results${o.backend ? " via " + o.backend : ""}` })));
+      if (o.results.length) box.append(sources(o.results));
+      continue;
+    }
     if (value == null) continue;
     box.append(el("div", { class: "item" }, el("span", { class: "label", text: r.task_id }), el("span", { class: "value", text: value })));
   }
   return box.childElementCount ? box : null;
+}
+
+// Only web addresses become links; anything else (javascript:, data:, ...) stays plain text.
+function safeUrl(url) {
+  try { const u = new URL(url); return u.protocol === "https:" || u.protocol === "http:" ? u.href : null; } catch { return null; }
+}
+
+function sources(results) {
+  const list = el("ol", { class: "sources" });
+  for (const s of results.slice(0, 10)) {
+    const href = safeUrl(s.url);
+    const title = href
+      ? el("a", { href, target: "_blank", rel: "noopener noreferrer", text: s.title || s.url })
+      : el("span", { text: s.title || s.url || "" });
+    const meta = [s.source, s.published_at ? new Date(s.published_at).toLocaleDateString() : null].filter(Boolean).join(" · ");
+    list.append(el("li", {}, title, meta ? el("span", { class: "meta", text: meta }) : null,
+      s.snippet ? el("q", { text: s.snippet }) : null));
+  }
+  return list;
 }
 
 function steps(record) {

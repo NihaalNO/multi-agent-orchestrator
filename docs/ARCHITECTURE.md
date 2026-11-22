@@ -225,7 +225,7 @@ infinite or pointless retry loops (spec §6.1).
 | API auth | Hashed API keys mapped to principals (`ORCH_PRINCIPALS_PATH`); `admin` / `approver` roles | Simple, deterministic and default-deny (no principals → nobody authenticates). JWT/OAuth can replace `ApiKeyAuthenticator` later without touching policy code. |
 | Policy storage | JSON grant file (`ORCH_POLICY_PATH`), loaded at startup | Reviewable in version control; no database needed yet. No file → no grants → everything denied. |
 | Approval storage | Pluggable `ApprovalStore`: in-memory by default, SQLite with `ORCH_STATE_PATH` | Pending approvals survive restarts once a state file is configured; tests and quick runs need no database. |
-| Python sandbox | Separate subprocess (`python -I`), timeout, temp working dir, no inherited env; killed on cancellation | Honest limitation: a subprocess is **not** a security sandbox. Container isolation (Docker) is the planned upgrade; the `isolation` field already models it. |
+| Python sandbox | CPython compiled for WASI, run in wasmtime (`IsolationLevel.WASM`): read-only stdlib at `/lib`, empty scratch `/tmp`, no network or host environment, memory cap, time limit by epoch interruption, output capped as written. One compiled module per process; a fresh instance per run. Fallback: subprocess (`python -I`), selected by `ORCH_PYTHON_SANDBOX` | WebAssembly gives a real boundary without Docker, on every OS including Windows, and is testable in CI. Cost: standard library only. A subprocess is **not** a security boundary, so `auto` warns when it falls back and `wasm` refuses to start without the sandbox. |
 | Scheduling strategy | Ready queue: a task starts when its own dependencies succeed | Layer-by-layer execution would make every task wait for the slowest task of the previous layer. |
 | Retry safety | Non-idempotent operations retry only on `TransientToolError`, never after a timeout | After a timeout the write may already have happened; retrying could apply it twice. |
 | Duplicate protection | Idempotency key (per request) → non-idempotent calls run once per (user, key, tool, op, args) for the TTL; only successes are cached | Covers client double-submits and concurrent duplicates. Two identical non-idempotent calls inside one plan under one key also run once — the conservative choice. |
@@ -252,8 +252,8 @@ infinite or pointless retry loops (spec §6.1).
 2. ~~Web search backend~~ — decided: Anthropic's server-side web search
    (`AnthropicSearchBackend`, opt-in via `ORCH_SEARCH_BACKEND=anthropic`). Other providers remain a
    single `SearchBackend` class.
-3. **Python isolation strength**: subprocess isolation is implemented. Is that acceptable for
-   the MVP, or should code run in Docker (needs Docker on the target machine)?
+3. **Python isolation strength**: resolved in Phase 09 with a WebAssembly sandbox (see §5).
+   Container execution remains an option if third-party packages are ever needed.
 
 ---
 

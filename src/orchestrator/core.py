@@ -20,6 +20,7 @@ SQLite when ``ORCH_STATE_PATH`` is set (``orchestrator.state``).
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from datetime import UTC, datetime
@@ -35,6 +36,7 @@ from orchestrator.contracts import (
     ExecutionPlan,
     ExecutionReport,
     ExecutionStatus,
+    IsolationLevel,
     PlanningRequest,
     Principal,
     RoutingDecision,
@@ -56,7 +58,10 @@ from orchestrator.permissions import ApprovalManager, PermissionManager, PlanAut
 from orchestrator.registry.registry import ToolRegistry
 from orchestrator.resolution import ConflictResolver
 from orchestrator.routing import Planner, RoutingService, build_planner
-from orchestrator.tools import FileProcessingTool, PythonExecTool, SearchBackend, WebSearchTool
+from orchestrator.tools import FileProcessingTool, SearchBackend, WebSearchTool
+from orchestrator.tools.python_exec import build_python_tool
+
+_log = logging.getLogger(__name__)
 
 
 class RequestState(StrEnum):
@@ -145,7 +150,14 @@ async def register_default_tools(
     root = settings.file_tool_root
     root.mkdir(parents=True, exist_ok=True)
     await registry.register(FileProcessingTool(root), replace_existing=True)
-    await registry.register(PythonExecTool(timeout_s=settings.python_exec_timeout_s), replace_existing=True)
+    python_tool = build_python_tool(
+        sandbox=settings.python_sandbox, wasm_dir=settings.python_wasm_dir,
+        timeout_s=settings.python_exec_timeout_s, memory_mb=settings.python_memory_mb,
+    )
+    if python_tool.isolation != IsolationLevel.WASM:
+        _log.warning("python_exec runs in a plain subprocess, which is not a security sandbox; "
+                     "see scripts/fetch_python_wasm.py and ORCH_PYTHON_SANDBOX")
+    await registry.register(python_tool, replace_existing=True)
     if search_backend is None and settings.search_backend == "anthropic":
         import anthropic
 
@@ -163,6 +175,10 @@ async def register_default_tools(
         search_backend = GeminiSearchBackend(
             make_gemini_client(settings.api_key_for("gemini")), model=settings.effective_search_model
         )
+    elif search_backend is None and settings.search_backend == "tavily":
+        from orchestrator.tools.tavily_search import TavilySearchBackend
+
+        search_backend = TavilySearchBackend(search_depth=settings.tavily_search_depth)
     if search_backend is not None:
         await registry.register(WebSearchTool(search_backend), replace_existing=True)
 
