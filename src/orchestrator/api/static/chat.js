@@ -192,6 +192,83 @@ function highlights(record) {
   return box.childElementCount ? box : null;
 }
 
+// ------------------------------------------------------------------ grounded answer
+
+const CLAIM_STATUS = {
+  supported: ["ok", "✓ checked", "Every number matches the evidence it cites."],
+  unverified: ["warn", "⚠ unverified", "Code could not confirm this against the cited evidence."],
+  uncited: ["bad", "✗ no evidence", "This statement cites no existing evidence."],
+};
+
+// Answer text with [E1] citations turned into chips that jump to the evidence item.
+function citedText(text, anchor) {
+  const p = el("p", { class: "grounded" });
+  let last = 0;
+  for (const m of text.matchAll(/\[(E\d+)(\?)?\]/g)) {
+    p.append(text.slice(last, m.index));
+    if (m[2]) p.append(el("span", { class: "cite bad", title: "This citation points to no evidence", text: `${m[1]}?` }));
+    else p.append(el("a", { class: "cite", href: `#${anchor}-${m[1]}`, text: m[1],
+      onclick: (ev) => { ev.preventDefault(); showEvidence(anchor, m[1]); } }));
+    last = m.index + m[0].length;
+  }
+  p.append(text.slice(last));
+  return p;
+}
+
+function showEvidence(anchor, id) {
+  const item = document.getElementById(`${anchor}-${id}`);
+  if (!item) return;
+  item.closest("details").open = true;
+  item.scrollIntoView({ block: "center", behavior: "smooth" });
+  item.classList.add("flash");
+  setTimeout(() => item.classList.remove("flash"), 1600);
+}
+
+function groundedAnswer(answer, requestId) {
+  const anchor = `ev-${requestId}`;
+  const box = el("div", { class: "answer-block" }, citedText(answer.text, anchor));
+
+  const claims = answer.claims || [];
+  const ok = claims.filter((c) => c.status === "supported").length;
+  const why = el("details", { class: "why" }, el("summary", {
+    text: `How this answer is supported: ${ok} of ${claims.length} claim${claims.length === 1 ? "" : "s"} checked` }));
+  const list = el("ul", { class: "claims" });
+  for (const c of claims) {
+    const [tone, label, help] = CLAIM_STATUS[c.status] || CLAIM_STATUS.uncited;
+    const refs = el("span", { class: "refs" });
+    for (const id of c.evidence || []) refs.append(el("a", { class: "cite", href: `#${anchor}-${id}`, text: id,
+      onclick: (ev) => { ev.preventDefault(); showEvidence(anchor, id); } }));
+    list.append(el("li", {}, el("span", { class: `status ${tone}`, title: help, text: label }), " ",
+      el("span", { text: c.statement }), " ", refs, c.note ? el("span", { class: "note", text: c.note }) : null));
+  }
+  why.append(list);
+  if (ok < claims.length) why.open = true;  // anything unconfirmed is shown, not tucked away
+  box.append(why);
+
+  if ((answer.gaps || []).length) {
+    box.append(el("div", { class: "gaps" }, el("strong", { text: "Not answered by the evidence:" }),
+      el("ul", {}, ...answer.gaps.map((g) => el("li", { text: g })))));
+  }
+
+  const evidence = el("details", { class: "evidence" },
+    el("summary", { text: `Evidence (${(answer.evidence || []).length}) from the tools that ran` }));
+  const ol = el("ol", { class: "sources" });
+  for (const e of answer.evidence || []) {
+    const href = safeUrl(e.url || "");
+    const head = href ? el("a", { href, target: "_blank", rel: "noopener noreferrer", text: e.label })
+                      : el("span", { class: "label-strong", text: e.label });
+    const date = e.published_at ? new Date(e.published_at).toLocaleDateString() : null;
+    const meta = [e.id, e.kind === "web" ? "web" : e.kind === "computed" ? "computed with Python" : e.kind,
+                  `step ${e.task_id}`, date].filter(Boolean).join(" · ");
+    ol.append(el("li", { id: `${anchor}-${e.id}` }, head, el("span", { class: "meta", text: meta }),
+      el("q", { text: e.text })));
+  }
+  evidence.append(ol);
+  box.append(evidence);
+  if (answer.model) box.append(el("p", { class: "muted small", text: `Written by ${answer.model}; checked by code.` }));
+  return box;
+}
+
 // Only web addresses become links; anything else (javascript:, data:, ...) stays plain text.
 function safeUrl(url) {
   try { const u = new URL(url); return u.protocol === "https:" || u.protocol === "http:" ? u.href : null; } catch { return null; }
@@ -264,8 +341,13 @@ async function renderRecord(bubble, record, status) {
     return;
   }
   bubble.append(statusBadge(record));
-  const h = highlights(record);
-  if (h) bubble.append(h);
+  if (record.answer) {
+    bubble.append(groundedAnswer(record.answer, record.request_id));
+  } else {
+    if (record.answer_note) bubble.append(el("p", { class: "muted small", text: `No written answer: ${record.answer_note}` }));
+    const h = highlights(record);
+    if (h) bubble.append(h);
+  }
   // The summary's first line ("Request <id>: <state>.") repeats the badge; keep the rest.
   const summary = (record.summary || "").replace(/^Request \S+: [a-z_]+\.\n?/, "").trim();
   if (summary) bubble.append(el("p", { class: "summary", text: summary }));
