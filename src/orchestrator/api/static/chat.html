@@ -28,13 +28,15 @@
   </section>
 
   <main id="chat" class="chat" hidden>
-    <div id="log" class="log" aria-live="polite">
+    <div id="log" class="log" aria-live="polite"></div>
+    <template id="empty-template">
       <div class="empty" id="empty">
         <p>Ask for something in plain English, for example:</p>
-        <p class="example">Read users/&lt;you&gt;/sales.csv and calculate its average revenue using Python</p>
-        <p class="muted">Attach a CSV or text file with the paperclip; it is uploaded to your own folder.</p>
+        <p class="example">Read users/<span data-user>you</span>/sales.csv and calculate its average revenue using Python</p>
+        <p class="muted">Attach a CSV or text file with the paperclip; it is uploaded to your own folder and sent with your next message.</p>
+        <p class="muted">Each message is handled on its own; mention the file or value again in follow-ups.</p>
       </div>
-    </div>
+    </template>
 
     <form id="composer" class="composer">
       <div id="chips" class="chips"></div>

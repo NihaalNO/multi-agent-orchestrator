@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from orchestrator.config import Settings
 from orchestrator.contracts import PlanningRequest, PlanProposal, Principal, RoutedPlan
-from orchestrator.errors import ConfigurationError, NoMatchingToolError, PermissionDeniedError
+from orchestrator.errors import ConfigurationError, NoMatchingToolError, PermissionDeniedError, PlanOutputError
 from orchestrator.observability.audit import AuditLog
 from orchestrator.permissions.manager import PermissionManager, PlanAuthorization
 from orchestrator.registry.registry import ToolRegistry
@@ -105,6 +105,11 @@ class RoutingService:
                 out[path] = tuple(cols[:200])
         return out
 
+    async def _call_planner(self, request: PlanningRequest, catalog: ToolCatalog, feedback: str | None):
+        if feedback and self.supports_feedback:
+            return await self._planner.plan(request, catalog, feedback=feedback)  # type: ignore[call-arg]
+        return await self._planner.plan(request, catalog)
+
     @property
     def supports_feedback(self) -> bool:
         return bool(getattr(self._planner, "supports_feedback", False))
@@ -123,10 +128,18 @@ class RoutingService:
             request = request.model_copy(update={"file_columns": columns})
             self._audit.record("planner.file_hints", request_id=request.request_id, user_id=principal.user_id,
                                files=sorted(columns))
-        if feedback and self.supports_feedback:
-            proposal = await self._planner.plan(request, catalog, feedback=feedback)  # type: ignore[call-arg]
-        else:
-            proposal = await self._planner.plan(request, catalog)
+        try:
+            proposal = await self._call_planner(request, catalog, feedback)
+        except PlanOutputError as exc:
+            # LLM output is not deterministic: a plan that could not be read (bad JSON in a task's
+            # inputs, say) is usually fine on a second try once the model is told what was wrong.
+            if not self.supports_feedback:
+                raise
+            self._audit.record("planner.retry", request_id=request.request_id, user_id=principal.user_id,
+                               reason="unreadable plan output", error=exc.message)
+            note = (f"Your previous plan could not be read: {exc.message}. Return a complete, corrected "
+                    "plan; every inputs_json must be one valid JSON object.")
+            proposal = await self._call_planner(request, catalog, f"{feedback}\n\n{note}" if feedback else note)
         self._audit.record(
             "planner.proposal",
             request_id=request.request_id,

@@ -85,6 +85,11 @@ class PlanError(OrchestratorError):
     code = "plan_error"
 
 
+class PlanOutputError(PlanError):
+    """The planner's output could not be read as a plan (empty, off-schema, bad inputs_json).
+    Same API error code as PlanError; routing retries it once with the error as feedback."""
+
+
 class PlanCycleError(PlanError):
     code = "plan_cycle"
 

@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from orchestrator.contracts import PlanningRequest, PlanProposal
-from orchestrator.errors import PlanError
+from orchestrator.errors import PlanError, PlanOutputError
 from orchestrator.routing.planner import ToolCatalog, build_proposal
 
 SYSTEM_PROMPT = """\
@@ -44,6 +44,8 @@ inputs['rows'], and must assign the answer to `result`. Python code cannot open 
 them with a file capability first and pass the result through `inputs`.
 - Only reference files that the request names or that are listed as uploaded.
 - When <uploaded_files> lists a file's columns, use those exact names (they are case-sensitive).
+- read_csv returns every cell as a string, even numbers: in code, convert before doing arithmetic, \
+for example float(r['Revenue']).
 - In code, never substitute a default for a missing field or column (for example r.get('x', 0) or \
 try/except that hides the error): index directly, such as r['x'], so a wrong name fails loudly and \
 can be corrected instead of silently producing a wrong answer.
@@ -122,7 +124,8 @@ capability, tool, operation and inputs) so their results can be reused."""
 def user_message(request: PlanningRequest, catalog: ToolCatalog, feedback: str | None = None) -> str:
     listed = list(dict.fromkeys([*request.files, *request.file_columns]))
     files = "\n".join(
-        f"- {f} (CSV columns: {', '.join(request.file_columns[f])})" if f in request.file_columns else f"- {f}"
+        f"- {f} (CSV columns: {', '.join(request.file_columns[f])}; every value is read as a string)"
+        if f in request.file_columns else f"- {f}"
         for f in listed
     ) or "(none)"
     message = (
@@ -143,11 +146,11 @@ def no_tools_proposal(request: PlanningRequest, planner: str) -> PlanProposal:
 def parse_plan_output(text: str | None, request: PlanningRequest, planner: str) -> PlanProposal:
     """Model output (JSON text matching PLAN_SCHEMA) → untrusted PlanProposal, or PlanError."""
     if text is None or not text.strip():
-        raise PlanError("planner returned no text output")
+        raise PlanOutputError("planner returned no text output")
     try:
         raw = _RawPlan.model_validate_json(text)
     except ValidationError as exc:
-        raise PlanError(
+        raise PlanOutputError(
             "planner output did not match the plan schema",
             details={"errors": exc.errors(include_url=False, include_input=False)},
         ) from exc
@@ -157,9 +160,9 @@ def parse_plan_output(text: str | None, request: PlanningRequest, planner: str) 
         try:
             inputs = json.loads(t.inputs_json) if t.inputs_json.strip() else {}
         except json.JSONDecodeError as exc:
-            raise PlanError(f"task {t.task_id!r}: inputs_json is not valid JSON") from exc
+            raise PlanOutputError(f"task {t.task_id!r}: inputs_json is not valid JSON") from exc
         if not isinstance(inputs, dict):
-            raise PlanError(f"task {t.task_id!r}: inputs_json must encode an object")
+            raise PlanOutputError(f"task {t.task_id!r}: inputs_json must encode an object")
         if t.code.strip():
             # Code travels in its own field so it needs only one level of JSON escaping (code inside
             # inputs_json needs two, which models get wrong: literal "\\n" or everything on one line).
