@@ -17,6 +17,7 @@ from orchestrator.errors import (
 from orchestrator.registry import ToolRegistry
 from orchestrator.routing import RoutingService, RuleBasedPlanner, ToolCatalog, build_planner
 from orchestrator.routing.anthropic_planner import FALLBACK_BETA, PLAN_SCHEMA, AnthropicPlanner
+from fakes import TESTER, permissive
 from orchestrator.tools import (
     FileProcessingTool,
     PythonExecTool,
@@ -58,8 +59,9 @@ async def test_catalog_lists_only_available_operations(registry):
 
 
 async def test_rule_based_mvp_plan_routes_to_all_three_tools(registry):
-    service = RoutingService(registry, RuleBasedPlanner())
-    proposal, routed = await service.plan_and_route(PlanningRequest(request_id="r", text=MVP_REQUEST))
+    service = RoutingService(registry, RuleBasedPlanner(), permissive(registry))
+    outcome = await service.plan_and_route(PlanningRequest(request_id="r", text=MVP_REQUEST), TESTER)
+    proposal, routed = outcome.proposal, outcome.routed
     assert routed.complete
     # File load and web search are independent; the mean waits for the file.
     assert routed.plan.layers() == [["load_file", "web_search"], ["compute_mean"]]
@@ -74,8 +76,9 @@ async def test_rule_based_mvp_plan_routes_to_all_three_tools(registry):
 
 async def test_generated_mean_code_runs_against_real_file_output(registry):
     """Manually performs what the Phase 05 engine will: feed load_file's rows into compute_mean."""
-    service = RoutingService(registry, RuleBasedPlanner())
-    _, routed = await service.plan_and_route(PlanningRequest(request_id="r", text=MVP_REQUEST))
+    service = RoutingService(registry, RuleBasedPlanner(), permissive(registry))
+    outcome = await service.plan_and_route(PlanningRequest(request_id="r", text=MVP_REQUEST), TESTER)
+    _, routed = outcome.proposal, outcome.routed
     ctx = ExecutionContext(request_id="r", execution_id="e", task_id="t", principal=Principal(user_id="u"))
     rows = (await registry.get("file_processing").adapter.invoke("read_csv", {"path": "sales.csv"}, ctx))["rows"]
     mean_task = routed.plan.task("compute_mean")
@@ -100,9 +103,9 @@ async def test_rule_based_ambiguous_csv_is_an_error():
 
 
 async def test_rule_based_unrecognised_request_is_unsupported(registry):
-    service = RoutingService(registry, RuleBasedPlanner())
+    service = RoutingService(registry, RuleBasedPlanner(), permissive(registry))
     with pytest.raises(NoMatchingToolError) as exc:
-        await service.plan_and_route(PlanningRequest(text="book me a flight to Tokyo"))
+        await service.plan_and_route(PlanningRequest(text="book me a flight to Tokyo"), TESTER)
     assert exc.value.details["unsupported"] == ["book me a flight to Tokyo"]
 
 
@@ -153,8 +156,9 @@ LLM_PLAN = {
 
 async def test_anthropic_planner_request_shape_and_routing(registry):
     client, messages = fake_client(response(LLM_PLAN))
-    service = RoutingService(registry, AnthropicPlanner(client))
-    proposal, routed = await service.plan_and_route(PlanningRequest(request_id="r", text=MVP_REQUEST, files=("sales.csv",)))
+    service = RoutingService(registry, AnthropicPlanner(client), permissive(registry))
+    outcome = await service.plan_and_route(PlanningRequest(request_id="r", text=MVP_REQUEST, files=("sales.csv",)), TESTER)
+    proposal, routed = outcome.proposal, outcome.routed
 
     [call] = messages.calls
     assert call["model"] == "claude-opus-5-5"
@@ -173,16 +177,17 @@ async def test_anthropic_planner_request_shape_and_routing(registry):
 async def test_anthropic_planner_reports_unsupported(registry):
     plan = {"rationale": "", "tasks": [], "unsupported": ["send an email to the team"]}
     client, _ = fake_client(response(plan))
-    service = RoutingService(registry, AnthropicPlanner(client))
+    service = RoutingService(registry, AnthropicPlanner(client), permissive(registry))
     with pytest.raises(NoMatchingToolError) as exc:
-        await service.plan_and_route(PlanningRequest(text="email the team"))
+        await service.plan_and_route(PlanningRequest(text="email the team"), TESTER)
     assert exc.value.details["unsupported"] == ["send an email to the team"]
 
 
 async def test_anthropic_planner_hallucinated_binding_is_overridden(registry):
     plan = {**LLM_PLAN, "tasks": [llm_task("s", "web.search", {"query": "abc"}, tool_id="admin_shell", operation="run")]}
     client, _ = fake_client(response(plan))
-    _, routed = await RoutingService(registry, AnthropicPlanner(client)).plan_and_route(PlanningRequest(text="x"))
+    outcome = await RoutingService(registry, AnthropicPlanner(client), permissive(registry)).plan_and_route(PlanningRequest(text="x"), TESTER)
+    _, routed = outcome.proposal, outcome.routed
     assert routed.decisions[0].tool_id == "web_search"
     assert "not registered" in routed.decisions[0].proposal_rejected
 

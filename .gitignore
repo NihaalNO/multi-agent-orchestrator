@@ -7,3 +7,5 @@ __pycache__/
 data/
 build/
 dist/
+config/policy.json
+config/principals.json

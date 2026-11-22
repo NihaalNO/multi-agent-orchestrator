@@ -31,7 +31,7 @@ spec §13.12. Update it in the same commit as the work it describes.
 | Input / output schema validation | ✅ | `validate_input`, `validate_output` |
 | Registry consistency under concurrency | ✅ | lock-serialised writes, copy-on-write snapshots |
 
-## Phase 03 — Intelligent Routing  🟡
+## Phase 03 — Intelligent Routing  🟡 (only the live search backend remains)
 
 | Item | Status | Where |
 |---|---|---|
@@ -43,16 +43,24 @@ spec §13.12. Update it in the same commit as the work it describes.
 | `AnthropicPlanner` (Claude Opus 5.5, structured outputs, refusal fallbacks, error mapping) | ✅ | `routing/anthropic_planner.py` — tested with a fake client only; **no live API call made yet** |
 | `CapabilityRouter`: deterministic ranking, proposal re-verification, static input validation | ✅ | `routing/router.py` |
 | "No matching tool" handling, incl. partial routing | ✅ | `NoMatchingToolError`, `allow_partial` |
-| Permission-aware candidate filtering | 🟡 | hook (`candidate_filter`) in place; policy arrives in Phase 04 |
+| Permission-aware candidate filtering | ✅ | wired in Phase 04 |
 | Cost/latency-weighted scoring beyond lexicographic ranking | ⬜ | deferred until real cost/latency data exists (spec §11) |
 
-## Phase 04 — Permission Management  ⬜
+## Phase 04 — Permission Management  ✅
 
-- ⬜ Grant model: user/role → tool → operation → access level → resource patterns
-- ⬜ Default-deny `PolicyPermissionManager`
-- ⬜ Approval workflow for `sensitive` operations (`awaiting_approval` status)
-- ⬜ Permission decisions written to audit log
-- ⬜ Replace admin-token stopgap with principal-based auth on the API
+| Item | Status | Where |
+|---|---|---|
+| Grant model: user/role → tool → operation → access level → resource patterns; deny rules | ✅ | `contracts/permissions.py` |
+| Default-deny policy engine | ✅ | `permissions/policy.py` (`GrantPolicy`) |
+| Resources derived by adapters from real arguments (not from the plan); path normalisation | ✅ | `ToolAdapter.resource_for`, `FileProcessingTool.resource_for` |
+| Provisional decisions when a resource depends on an upstream output | ✅ | `PermissionDecision.provisional`; final check is the engine's job (Phase 05) |
+| Permission-aware planning catalog, routing filter, plan authorization | ✅ | `PermissionManager`, `RoutingService` |
+| Approval workflow: approver role, no self-approval, arg-digest binding, TTL, single use | ✅ | `permissions/approvals.py`; engine integration in Phase 05 |
+| Permission decisions and approval transitions audited | ✅ | `permission.decision`, `approval.*` events |
+| Principal-based API auth (hashed API keys), admin/approver roles, approval endpoints | ✅ | `api/auth.py`, `api/app.py` |
+| Policy / principals loaded from JSON files | ✅ | `permissions/loader.py`, `config/*.example.json` |
+| JWT / OAuth 2.0 | ⬜ | not needed for MVP; `ApiKeyAuthenticator` is the swap point |
+| Persistent approval store | ⬜ | in-memory for now (approvals are lost on restart) |
 
 ## Phase 05 — Parallel Execution  ⬜
 
@@ -89,7 +97,7 @@ spec §13.12. Update it in the same commit as the work it describes.
 | 1 | Register a new tool while running | ✅ `tests/test_registry.py`, `tests/test_api.py` |
 | 2 | Request requiring multiple tools | 🟡 planned + routed to 3 tools (`test_planners.py`); execution in Phase 05/07 |
 | 3 | Request with no matching tool | ✅ `tests/test_router.py`, `tests/test_planners.py` |
-| 4 | Unauthorized write operation | ⬜ Phase 04 |
+| 4 | Unauthorized write operation | ✅ `tests/test_permissions.py` (policy + routing) |
 | 5 | Three independent tasks concurrently | ⬜ Phase 05 |
 | 6 | Sequential dependencies | 🟡 ordering logic tested (`ExecutionPlan.layers`); execution in Phase 05 |
 | 7 | Tool timeout | 🟡 health-check timeout tested; execution timeout in Phase 05 |

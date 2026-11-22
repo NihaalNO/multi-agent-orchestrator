@@ -1,41 +1,55 @@
 """HTTP API (FastAPI).
 
-Phase 01/02 surface: health, tool discovery, capability listing, and admin operations
-(enable/disable, health checks). ``POST /requests`` arrives with the orchestrator facade in
-Phase 07.
-
-Admin endpoints require ``Authorization: Bearer <ORCH_ADMIN_TOKEN>``. If no admin token is
-configured they are disabled (default deny). This is a stopgap until principal-based auth
-(Phase 04).
+Every endpoint except ``/health`` requires ``Authorization: Bearer <api key>``; the key maps to
+a ``Principal`` (see ``api/auth.py``). Admin endpoints additionally require the admin role,
+approval decisions the approver role. ``POST /requests`` arrives with the orchestrator facade
+in Phase 07.
 """
 
-from __future__ import annotations
-
-import hmac
+# No `from __future__ import annotations` here: FastAPI must resolve the closure-local
+# dependency aliases (PrincipalDep, AdminDep, ...) at route-definition time.
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import Annotated, Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from orchestrator import __version__
+from orchestrator.api.auth import ApiKeyAuthenticator
 from orchestrator.config import Settings
-from orchestrator.contracts.tools import ToolDescriptor
+from orchestrator.contracts import ApprovalStatus, Principal, ToolDescriptor
 from orchestrator.errors import (
+    ApprovalRequiredError,
     DuplicateToolError,
+    NoMatchingToolError,
     OperationNotFoundError,
     OrchestratorError,
+    PermissionDeniedError,
     SchemaValidationError,
     ToolNotFoundError,
 )
 from orchestrator.observability.audit import AuditLog
+from orchestrator.permissions import (
+    ApprovalManager,
+    ApprovalNotFoundError,
+    GrantPolicy,
+    PermissionManager,
+    load_grants,
+    load_principals,
+)
 from orchestrator.registry.registry import ToolRegistry
 
 _STATUS_BY_ERROR: list[tuple[type[OrchestratorError], int]] = [
     (ToolNotFoundError, 404),
     (OperationNotFoundError, 404),
+    (ApprovalNotFoundError, 404),
+    (PermissionDeniedError, 403),
     (DuplicateToolError, 409),
+    (ApprovalRequiredError, 409),
     (SchemaValidationError, 422),
+    (NoMatchingToolError, 422),
 ]
 
 
@@ -50,11 +64,18 @@ def _descriptor_json(d: ToolDescriptor) -> dict[str, Any]:
     return {**d.model_dump(mode="json"), "available": d.available}
 
 
+class DecisionBody(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
+
+
 def create_app(
     *,
     settings: Settings | None = None,
     registry: ToolRegistry | None = None,
     audit: AuditLog | None = None,
+    authenticator: ApiKeyAuthenticator | None = None,
+    permissions: PermissionManager | None = None,
+    approvals: ApprovalManager | None = None,
 ) -> FastAPI:
     # Explicit `is None` checks: an empty ToolRegistry is falsy (it defines __len__).
     if settings is None:
@@ -63,6 +84,16 @@ def create_app(
         audit = AuditLog()
     if registry is None:
         registry = ToolRegistry(audit, health_check_timeout_s=settings.health_check_timeout_s)
+    if authenticator is None:
+        records = load_principals(settings.principals_path) if settings.principals_path else []
+        authenticator = ApiKeyAuthenticator(records)
+    if permissions is None:
+        grants = load_grants(settings.policy_path) if settings.policy_path else []
+        permissions = PermissionManager(GrantPolicy(grants), registry, audit)
+    if approvals is None:
+        approvals = ApprovalManager(
+            audit, approver_role=settings.approver_role, ttl=timedelta(seconds=settings.approval_ttl_s)
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -73,27 +104,51 @@ def create_app(
     app.state.settings = settings
     app.state.registry = registry
     app.state.audit = audit
+    app.state.permissions = permissions
+    app.state.approvals = approvals
 
     @app.exception_handler(OrchestratorError)
     async def _orchestrator_error(_: Request, exc: OrchestratorError) -> JSONResponse:
         return JSONResponse(status_code=_status_for(exc), content={"error": exc.to_dict()})
 
-    def require_admin(authorization: Annotated[str | None, Header()] = None) -> None:
-        token = settings.admin_token
-        if token is None:
-            raise HTTPException(403, "admin API disabled: ORCH_ADMIN_TOKEN is not configured")
-        expected = f"Bearer {token.get_secret_value()}"
-        if authorization is None or not hmac.compare_digest(authorization.encode(), expected.encode()):
-            raise HTTPException(401, "invalid or missing admin token")
+    # ------------------------------------------------------------------ auth dependencies
 
-    admin = [Depends(require_admin)]
+    def current_principal(authorization: Annotated[str | None, Header()] = None) -> Principal:
+        principal = authenticator.authenticate(authorization)
+        if principal is None:
+            raise HTTPException(401, "missing or invalid API key", headers={"WWW-Authenticate": "Bearer"})
+        return principal
+
+    PrincipalDep = Annotated[Principal, Depends(current_principal)]
+
+    def require_role(role: str):
+        def dep(principal: PrincipalDep) -> Principal:
+            if role not in principal.roles:
+                audit.record("auth.forbidden", user_id=principal.user_id, required_role=role)
+                raise HTTPException(403, f"requires the {role!r} role")
+            return principal
+
+        return Depends(dep)
+
+    AdminDep = Annotated[Principal, require_role(settings.admin_role)]
+    ApproverDep = Annotated[Principal, require_role(settings.approver_role)]
+
+    # ------------------------------------------------------------------ public
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "version": __version__, "tools": len(registry)}
+        return {"status": "ok", "version": __version__}
+
+    # ------------------------------------------------------------------ authenticated
+
+    @app.get("/me")
+    async def me(principal: PrincipalDep) -> dict[str, Any]:
+        return {"user_id": principal.user_id, "roles": sorted(principal.roles)}
 
     @app.get("/tools")
-    async def list_tools(capability: str | None = None, available_only: bool = False) -> dict[str, Any]:
+    async def list_tools(
+        principal: PrincipalDep, capability: str | None = None, available_only: bool = False
+    ) -> dict[str, Any]:
         if capability is not None:
             matches = registry.find_by_capability(capability, available_only=available_only)
             return {"capability": capability, "matches": [m.model_dump(mode="json") for m in matches]}
@@ -101,23 +156,50 @@ def create_app(
         return {"tools": [_descriptor_json(d) for d in tools]}
 
     @app.get("/tools/{tool_id}")
-    async def get_tool(tool_id: str) -> dict[str, Any]:
+    async def get_tool(tool_id: str, principal: PrincipalDep) -> dict[str, Any]:
         return _descriptor_json(registry.get(tool_id).descriptor())
 
     @app.get("/capabilities")
-    async def capabilities(available_only: bool = True) -> dict[str, list[str]]:
+    async def capabilities(principal: PrincipalDep, available_only: bool = True) -> dict[str, list[str]]:
         return registry.capabilities(available_only=available_only)
 
-    @app.post("/admin/tools/{tool_id}/enable", dependencies=admin)
-    async def enable_tool(tool_id: str) -> dict[str, Any]:
+    # ------------------------------------------------------------------ approvals
+
+    @app.get("/approvals")
+    async def list_approvals(principal: ApproverDep, status: ApprovalStatus | None = ApprovalStatus.PENDING) -> dict[str, Any]:
+        return {"approvals": [a.model_dump(mode="json") for a in approvals.list(status)]}
+
+    @app.get("/approvals/{approval_id}")
+    async def get_approval(approval_id: str, principal: PrincipalDep) -> dict[str, Any]:
+        item = approvals.get(approval_id)
+        if item.requested_by != principal.user_id and settings.approver_role not in principal.roles:
+            raise ApprovalNotFoundError(f"approval {approval_id!r} not found")  # don't leak existence
+        return item.model_dump(mode="json")
+
+    @app.post("/approvals/{approval_id}/approve")
+    async def approve(approval_id: str, principal: ApproverDep, body: DecisionBody | None = None) -> dict[str, Any]:
+        item = await approvals.decide(approval_id, approver=principal, approve=True, note=body.note if body else None)
+        return item.model_dump(mode="json")
+
+    @app.post("/approvals/{approval_id}/deny")
+    async def deny(approval_id: str, principal: ApproverDep, body: DecisionBody | None = None) -> dict[str, Any]:
+        item = await approvals.decide(approval_id, approver=principal, approve=False, note=body.note if body else None)
+        return item.model_dump(mode="json")
+
+    # ------------------------------------------------------------------ admin
+
+    @app.post("/admin/tools/{tool_id}/enable")
+    async def enable_tool(tool_id: str, principal: AdminDep) -> dict[str, Any]:
+        audit.record("admin.tool_enable", tool_id=tool_id, user_id=principal.user_id)
         return _descriptor_json(await registry.set_enabled(tool_id, True))
 
-    @app.post("/admin/tools/{tool_id}/disable", dependencies=admin)
-    async def disable_tool(tool_id: str) -> dict[str, Any]:
+    @app.post("/admin/tools/{tool_id}/disable")
+    async def disable_tool(tool_id: str, principal: AdminDep) -> dict[str, Any]:
+        audit.record("admin.tool_disable", tool_id=tool_id, user_id=principal.user_id)
         return _descriptor_json(await registry.set_enabled(tool_id, False))
 
-    @app.post("/admin/tools/health-check", dependencies=admin)
-    async def health_check(tool_id: str | None = None) -> dict[str, str]:
+    @app.post("/admin/tools/health-check")
+    async def health_check(principal: AdminDep, tool_id: str | None = None) -> dict[str, str]:
         return {k: v.value for k, v in (await registry.check_health(tool_id)).items()}
 
     return app

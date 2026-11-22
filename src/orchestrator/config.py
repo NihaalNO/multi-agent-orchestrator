@@ -41,8 +41,13 @@ class Settings(BaseModel):
     # Optional: if unset, the Anthropic SDK resolves ANTHROPIC_API_KEY / auth profiles itself.
     llm_api_key: SecretStr | None = None
 
-    # Admin API stopgap until principal-based auth (Phase 04). Unset → admin endpoints disabled.
-    admin_token: SecretStr | None = None
+    # Permissions. Unset policy → no grants → everything denied (default deny).
+    # Unset principals → no API key authenticates → every protected endpoint returns 401.
+    policy_path: Path | None = None
+    principals_path: Path | None = None
+    admin_role: str = "admin"
+    approver_role: str = "approver"
+    approval_ttl_s: int = Field(default=3600, ge=60, le=7 * 24 * 3600)
 
     # Observability
     audit_log_path: Path | None = None

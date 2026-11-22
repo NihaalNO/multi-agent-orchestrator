@@ -13,9 +13,10 @@ For each task:
   3. Inputs without ``$ref`` markers are validated against the operation's input schema now
      (fail fast). Inputs that reference upstream outputs are validated at execution time.
 
-``candidate_filter`` is the hook through which the permission manager (Phase 04) removes
-operations the principal may not use, so routing never picks an unauthorized tool when an
-authorized one exists.
+``candidate_filter`` is the hook through which the permission manager removes operations the
+principal may not use for this task's inputs, so routing never picks an unauthorized tool when
+an authorized one exists. If no permitted candidate exists, routing fails with
+``PermissionDeniedError`` (not ``NoMatchingToolError``), so denials are visible as denials.
 """
 
 from __future__ import annotations
@@ -31,11 +32,11 @@ from orchestrator.contracts import (
     UnroutedTask,
     find_refs,
 )
-from orchestrator.errors import InputValidationError, NoMatchingToolError
+from orchestrator.errors import InputValidationError, NoMatchingToolError, PermissionDeniedError
 from orchestrator.observability.audit import AuditLog
 from orchestrator.registry.registry import ToolRegistry
 
-CandidateFilter = Callable[[CapabilityMatch], bool]
+CandidateFilter = Callable[[CapabilityMatch, TaskSpec], bool]
 
 
 def _label(m: CapabilityMatch) -> str:
@@ -54,12 +55,13 @@ class CapabilityRouter:
         self._audit = audit or AuditLog()
         self._filter = candidate_filter
 
-    def candidates(self, capability: str) -> list[CapabilityMatch]:
-        """Available, permitted candidates for a capability, best first."""
+    def candidates(self, task: TaskSpec) -> list[CapabilityMatch]:
+        """Available candidates for the task's capability that the filter permits for this
+        task's inputs, best first."""
         return [
             m
-            for m in self._registry.find_by_capability(capability, available_only=True)
-            if self._filter is None or self._filter(m)
+            for m in self._registry.find_by_capability(task.capability, available_only=True)
+            if self._filter is None or self._filter(m, task)
         ]
 
     def route(self, proposal: PlanProposal, *, allow_partial: bool = False) -> RoutedPlan:
@@ -79,19 +81,15 @@ class CapabilityRouter:
                     decisions.append(decision)
 
         if (unrouted or proposal.unsupported or plan is None) and not allow_partial:
-            self._audit.record(
-                "routing.failed",
-                request_id=proposal.request_id,
-                unrouted=[u.model_dump() for u in unrouted],
-                unsupported=list(proposal.unsupported),
-            )
-            raise NoMatchingToolError(
-                "no available tool can handle part of this request",
-                details={
-                    "unrouted": [u.model_dump() for u in unrouted],
-                    "unsupported": list(proposal.unsupported),
-                },
-            )
+            details = {
+                "unrouted": [u.model_dump() for u in unrouted],
+                "unsupported": list(proposal.unsupported),
+            }
+            self._audit.record("routing.failed", request_id=proposal.request_id, **details)
+            # A permission denial is reported as such, not disguised as a missing tool.
+            if any(u.kind == "denied" for u in unrouted):
+                raise PermissionDeniedError("not permitted to perform part of this request", details=details)
+            raise NoMatchingToolError("no available tool can handle part of this request", details=details)
 
         dropped = {u.task_id for u in unrouted}
         remaining = plan.without(dropped) if plan is not None and dropped else plan
@@ -102,6 +100,7 @@ class CapabilityRouter:
                 UnroutedTask(
                     task_id=t.task_id,
                     capability=t.capability,
+                    kind="dependency",
                     reason="depends on a task that could not be routed",
                 )
                 for t in plan.tasks
@@ -133,7 +132,7 @@ class CapabilityRouter:
     # ------------------------------------------------------------------ internals
 
     def _decide(self, task: TaskSpec) -> RoutingDecision | UnroutedTask:
-        candidates = self.candidates(task.capability)
+        candidates = self.candidates(task)
         proposed = f"{task.tool_id}.{task.operation}" if task.bound else None
         rejected: str | None = None
         chosen: CapabilityMatch | None = None
@@ -145,7 +144,8 @@ class CapabilityRouter:
 
         if chosen is None:
             if not candidates:
-                return UnroutedTask(task_id=task.task_id, capability=task.capability, reason=self._why_none(task.capability))
+                kind, reason = self._why_none(task.capability)
+                return UnroutedTask(task_id=task.task_id, capability=task.capability, kind=kind, reason=reason)
             chosen = candidates[0]
 
         if not find_refs(task.inputs):
@@ -197,11 +197,11 @@ class CapabilityRouter:
             return f"{task.tool_id}.{task.operation} is unavailable or not permitted"
         return None
 
-    def _why_none(self, capability: str) -> str:
+    def _why_none(self, capability: str) -> tuple[str, str]:
         all_matches = self._registry.find_by_capability(capability, available_only=False)
         if not all_matches:
-            return f"no registered tool provides capability {capability!r}"
+            return "no_provider", f"no registered tool provides capability {capability!r}"
         if not any(m.available for m in all_matches):
             names = ", ".join(sorted({_label(m) for m in all_matches}))
-            return f"providers of {capability!r} are disabled or unhealthy: {names}"
-        return f"no permitted provider of {capability!r}"
+            return "unavailable", f"providers of {capability!r} are disabled or unhealthy: {names}"
+        return "denied", f"not permitted to use any provider of {capability!r}"

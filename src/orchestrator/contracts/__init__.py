@@ -2,6 +2,8 @@
 
 from orchestrator.contracts.context import ExecutionContext
 from orchestrator.contracts.permissions import (
+    ApprovalRequest,
+    ApprovalStatus,
     PermissionDecision,
     PermissionGrant,
     PermissionPolicy,
@@ -42,6 +44,8 @@ from orchestrator.contracts.tools import (
 
 __all__ = [
     "AccessLevel",
+    "ApprovalRequest",
+    "ApprovalStatus",
     "CapabilityMatch",
     "Conflict",
     "ConflictKind",

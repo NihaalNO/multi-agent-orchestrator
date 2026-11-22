@@ -10,9 +10,9 @@ deterministic Python validates, authorizes and executes them.
 
 ## Status
 
-Phases 01 (foundation) and 02 (dynamic tool registry) are complete; Phase 03 (planning and
-capability routing) is complete apart from a live web-search backend. See the roadmap for what
-is next and which decisions are still open.
+Phases 01 (foundation), 02 (dynamic tool registry) and 04 (permissions) are complete; Phase 03
+(planning and capability routing) is complete apart from a live web-search backend. Next is
+Phase 05 (parallel execution). See the roadmap for details and open decisions.
 
 ## Planner configuration
 
@@ -34,11 +34,36 @@ python -m venv .venv
 .\.venv\Scripts\python -m pytest
 ```
 
-Run the API (admin endpoints need `ORCH_ADMIN_TOKEN`):
+## Permissions and API keys
+
+Everything is denied unless a grant allows it. Copy the examples and edit them:
 
 ```powershell
-$env:ORCH_ADMIN_TOKEN = "change-me"; .\.venv\Scripts\python -m uvicorn orchestrator.api:create_app --factory --reload
+Copy-Item config\policy.example.json config\policy.json; Copy-Item config\principals.example.json config\principals.json
 ```
+
+- `config/policy.json` lists grants: `subject` (`role:<name>` or `user:<id>`), `tool_id`,
+  `operation`, `max_access` (`read` < `write` < `execute` < `admin`), optional `resources` globs
+  such as `file:reports/*`, `effect: "deny"` to carve out exceptions, and `allow_sensitive` to let
+  sensitive operations be *requested* (they still need an approver).
+- `config/principals.json` maps users to roles and to the **SHA-256 hash** of their API key. The
+  example hashes are placeholders that match no key. Hash a key without echoing it:
+
+```powershell
+.\.venv\Scripts\python -c "import hashlib,getpass; print(hashlib.sha256(getpass.getpass('API key: ').encode()).hexdigest())"
+```
+
+Roles with special meaning: `admin` (enable/disable tools, health checks) and `approver` (approve
+or deny sensitive operations; nobody can approve their own request). Both role names are
+configurable (`ORCH_ADMIN_ROLE`, `ORCH_APPROVER_ROLE`).
+
+Run the API:
+
+```powershell
+$env:ORCH_POLICY_PATH = "config\policy.json"; $env:ORCH_PRINCIPALS_PATH = "config\principals.json"; .\.venv\Scripts\python -m uvicorn orchestrator.api:create_app --factory --reload
+```
+
+Clients send `Authorization: Bearer <api key>`. `/health` is the only public endpoint.
 
 ## Adding a tool
 
@@ -71,4 +96,6 @@ await registry.register(EchoTool())
 
 Every declared operation needs a matching `op_<name>` coroutine, and schemas must be valid JSON
 Schema. Registration is rejected otherwise. Registering a tool does not authorize anyone to
-use it.
+use it. If an operation touches an identifiable resource (a file, a record), override
+`resource_for(operation, args)` to return a string such as `file:<path>` so grants can be
+scoped to it.

@@ -81,3 +81,69 @@ class SlowHealthTool(CalcTool):
 class CrashingHealthTool(CalcTool):
     async def health_check(self) -> bool:
         raise RuntimeError("backend down")
+
+
+# --- Permission helpers -------------------------------------------------------------------------
+
+from orchestrator.contracts import PermissionGrant, Principal  # noqa: E402
+from orchestrator.permissions import GrantPolicy, PermissionManager  # noqa: E402
+
+TESTER = Principal(user_id="tester", roles=frozenset({"tester"}))
+
+
+def permissive(registry, audit=None) -> PermissionManager:
+    """A manager that lets role:tester do anything non-sensitive."""
+    return PermissionManager(
+        GrantPolicy([PermissionGrant(subject="role:tester", max_access=AccessLevel.ADMIN)]), registry, audit
+    )
+
+
+ID_IN = {
+    "type": "object",
+    "properties": {"id": {"type": "integer"}, "value": {"type": "string"}},
+    "required": ["id"],
+    "additionalProperties": False,
+}
+
+RECORDS_SPEC = ToolSpec(
+    tool_id="records",
+    name="Records DB",
+    description="A tiny record store",
+    operations=(
+        OperationSpec(name="read", description="Read a record", capabilities=("db.read",),
+                      input_schema=ID_IN, access=AccessLevel.READ),
+        OperationSpec(name="update", description="Update a record", capabilities=("db.write",),
+                      input_schema=ID_IN, access=AccessLevel.WRITE, idempotent=False),
+        OperationSpec(name="delete", description="Delete a record", capabilities=("db.delete",),
+                      input_schema=ID_IN, access=AccessLevel.WRITE, sensitive=True, idempotent=False),
+    ),
+)
+
+
+class RecordsTool(ToolAdapter):
+    """Write-capable tool with a sensitive operation and resource derivation."""
+
+    spec = RECORDS_SPEC
+
+    def __init__(self) -> None:
+        self.data: dict[int, str] = {1: "one", 2: "two"}
+
+    def resource_for(self, operation, args):
+        from orchestrator.contracts import find_refs
+        from orchestrator.tools.base import RESOURCE_PENDING
+
+        rid = args.get("id")
+        if isinstance(rid, int):
+            return f"db:records/{rid}"
+        return RESOURCE_PENDING if find_refs(rid) else None
+
+    async def op_read(self, args, ctx):
+        return {"id": args["id"], "value": self.data.get(args["id"])}
+
+    async def op_update(self, args, ctx):
+        self.data[args["id"]] = args.get("value", "")
+        return {"ok": True}
+
+    async def op_delete(self, args, ctx):
+        self.data.pop(args["id"], None)
+        return {"ok": True}

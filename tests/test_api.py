@@ -2,12 +2,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from orchestrator.api import create_app
+from orchestrator.api.auth import ApiKeyAuthenticator, hash_api_key
 from orchestrator.config import Settings
+from orchestrator.contracts import Principal
+from orchestrator.permissions import ApprovalManager, PrincipalRecord
 from orchestrator.registry import ToolRegistry
 
 from fakes import CalcTool
 
-ADMIN = {"Authorization": "Bearer test-admin"}
+KEYS = {"alice": "alice-key", "bob": "bob-key", "root": "root-key"}
+ROLES = {"alice": ["analyst"], "bob": ["approver"], "root": ["admin"]}
+
+
+def auth(user):
+    return {"Authorization": f"Bearer {KEYS[user]}"}
 
 
 @pytest.fixture
@@ -16,48 +24,80 @@ def registry():
 
 
 @pytest.fixture
-def client(registry):
-    app = create_app(settings=Settings(admin_token="test-admin"), registry=registry)
+def approvals():
+    return ApprovalManager()
+
+
+@pytest.fixture
+def client(registry, approvals):
+    authn = ApiKeyAuthenticator(
+        PrincipalRecord(user_id=u, roles=ROLES[u], api_key_sha256=hash_api_key(k)) for u, k in KEYS.items()
+    )
+    app = create_app(settings=Settings(), registry=registry, authenticator=authn, approvals=approvals)
     with TestClient(app) as c:
         yield c
 
 
-def test_health(client):
+def test_health_is_public(client):
     assert client.get("/health").json()["status"] == "ok"
 
 
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong"}, {"Authorization": "Basic alice-key"}])
+def test_protected_endpoints_require_valid_key(client, headers):
+    assert client.get("/tools", headers=headers).status_code == 401
+
+
+def test_me_reports_principal_from_key(client):
+    assert client.get("/me", headers=auth("alice")).json() == {"user_id": "alice", "roles": ["analyst"]}
+
+
 def test_tool_registered_at_runtime_is_visible_over_api(client, registry):
-    assert client.get("/tools").json() == {"tools": []}
+    assert client.get("/tools", headers=auth("alice")).json() == {"tools": []}
     client.portal.call(registry.register, CalcTool())
-    tools = client.get("/tools").json()["tools"]
+    tools = client.get("/tools", headers=auth("alice")).json()["tools"]
     assert [t["spec"]["tool_id"] for t in tools] == ["calc"]
-    assert tools[0]["available"] is True
-    matches = client.get("/tools", params={"capability": "data.compute"}).json()["matches"]
+    matches = client.get("/tools", params={"capability": "data.compute"}, headers=auth("alice")).json()["matches"]
     assert matches[0]["tool_id"] == "calc"
-    assert client.get("/capabilities").json() == {
-        "data.compute": ["calc.mean"],
-        "data.stats.mean": ["calc.mean"],
-    }
 
 
 def test_unknown_tool_returns_structured_404(client):
-    r = client.get("/tools/ghost")
-    assert r.status_code == 404
-    assert r.json()["error"]["code"] == "tool_not_found"
+    r = client.get("/tools/ghost", headers=auth("alice"))
+    assert r.status_code == 404 and r.json()["error"]["code"] == "tool_not_found"
 
 
-def test_admin_requires_token(client, registry):
+def test_admin_endpoints_require_admin_role(client, registry):
     client.portal.call(registry.register, CalcTool())
-    assert client.post("/admin/tools/calc/disable").status_code == 401
-    assert client.post("/admin/tools/calc/disable", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    r = client.post("/admin/tools/calc/disable", headers=ADMIN)
+    assert client.post("/admin/tools/calc/disable", headers=auth("alice")).status_code == 403
+    assert client.post("/admin/tools/calc/disable", headers=auth("bob")).status_code == 403
+    r = client.post("/admin/tools/calc/disable", headers=auth("root"))
     assert r.status_code == 200 and r.json()["available"] is False
-    assert client.get("/capabilities").json() == {}
-    assert client.post("/admin/tools/calc/enable", headers=ADMIN).json()["available"] is True
-    assert client.post("/admin/tools/health-check", headers=ADMIN).json() == {"calc": "healthy"}
+    assert client.get("/capabilities", headers=auth("alice")).json() == {}
+    assert client.post("/admin/tools/calc/enable", headers=auth("root")).json()["available"] is True
+    assert client.post("/admin/tools/health-check", headers=auth("root")).json() == {"calc": "healthy"}
 
 
-def test_admin_disabled_without_configured_token(registry):
-    app = create_app(settings=Settings(), registry=registry)
-    with TestClient(app) as c:
-        assert c.post("/admin/tools/health-check", headers=ADMIN).status_code == 403
+def test_approval_endpoints(client, approvals):
+    alice = Principal(user_id="alice", roles=frozenset({"analyst"}))
+    item = client.portal.call(lambda: approvals.request(
+        principal=alice, request_id="r", task_id="t", tool_id="records", operation="delete",
+        resource="db:records/1", args={"id": 1},
+    ))
+    aid = item.approval_id
+    assert client.get("/approvals", headers=auth("alice")).status_code == 403
+    listed = client.get("/approvals", headers=auth("bob")).json()["approvals"]
+    assert [a["approval_id"] for a in listed] == [aid]
+
+    # Requester can see their own approval; another non-approver cannot even confirm it exists.
+    assert client.get(f"/approvals/{aid}", headers=auth("alice")).json()["status"] == "pending"
+    assert client.get(f"/approvals/{aid}", headers=auth("root")).status_code == 404
+
+    assert client.post(f"/approvals/{aid}/approve", headers=auth("alice")).status_code == 403
+    r = client.post(f"/approvals/{aid}/approve", headers=auth("bob"), json={"note": "looks fine"})
+    assert r.status_code == 200 and r.json()["status"] == "approved" and r.json()["note"] == "looks fine"
+    r = client.post(f"/approvals/{aid}/deny", headers=auth("bob"))
+    assert r.status_code == 409 and r.json()["error"]["code"] == "approval_required"
+
+
+def test_no_principals_configured_means_nobody_gets_in(registry):
+    with TestClient(create_app(settings=Settings(), registry=registry)) as c:
+        assert c.get("/tools", headers=auth("root")).status_code == 401

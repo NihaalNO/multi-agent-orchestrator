@@ -11,6 +11,7 @@ import asyncio
 import csv
 import fnmatch
 import io
+import posixpath
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +21,10 @@ from orchestrator.contracts import (
     ExecutionContext,
     OperationSpec,
     ToolSpec,
+    find_refs,
 )
 from orchestrator.errors import PermissionDeniedError, ToolExecutionError
-from orchestrator.tools.base import ToolAdapter
+from orchestrator.tools.base import RESOURCE_PENDING, ToolAdapter
 
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_MAX_ROWS = 10_000
@@ -190,6 +192,21 @@ class FileProcessingTool(ToolAdapter):
             "row_count": len(rows),
             "truncated": truncated,
         }
+
+    def resource_for(self, operation: str, args: dict[str, Any]) -> str | None | object:
+        """``file:<normalised relative path>``; ``file:`` for directory listings.
+
+        Normalising (``a/../b`` -> ``b``) matters: permission patterns are matched against this
+        string, so ``reports/../secret.csv`` must not look like it is under ``reports/``.
+        """
+        if operation == "list_files":
+            return "file:"
+        path = args.get("path")
+        if isinstance(path, str):
+            return "file:" + posixpath.normpath(path.replace("\\", "/"))
+        if find_refs(path):
+            return RESOURCE_PENDING
+        return None
 
     async def health_check(self) -> bool:
         return self._root.is_dir()

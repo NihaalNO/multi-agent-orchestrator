@@ -1,7 +1,7 @@
 import pytest
 
 from orchestrator.contracts import PlanProposal
-from orchestrator.errors import InputValidationError, NoMatchingToolError
+from orchestrator.errors import InputValidationError, NoMatchingToolError, PermissionDeniedError
 from orchestrator.observability import AuditLog, InMemoryAuditSink
 from orchestrator.registry import ToolRegistry
 from orchestrator.routing import CapabilityRouter, build_proposal
@@ -141,13 +141,13 @@ def test_inputs_with_refs_are_deferred_to_execution(router):
 
 
 def test_candidate_filter_excludes_tools(registry):
-    router = CapabilityRouter(registry, candidate_filter=lambda m: m.tool_id != "calc_good")
+    router = CapabilityRouter(registry, candidate_filter=lambda m, t: m.tool_id != "calc_good")
     routed = router.route(proposal(task("a")))
     assert routed.decisions[0].tool_id == "calc_meh"
-    blocked = CapabilityRouter(registry, candidate_filter=lambda m: False)
-    with pytest.raises(NoMatchingToolError) as exc:
+    blocked = CapabilityRouter(registry, candidate_filter=lambda m, t: False)
+    with pytest.raises(PermissionDeniedError) as exc:
         blocked.route(proposal(task("a")))
-    assert "no permitted provider" in exc.value.details["unrouted"][0]["reason"]
+    assert exc.value.details["unrouted"][0]["kind"] == "denied"
 
 
 def test_empty_proposal_is_rejected(router):

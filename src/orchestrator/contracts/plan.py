@@ -12,7 +12,7 @@ the value it needs exists.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -61,9 +61,8 @@ class TaskSpec(BaseModel):
     operation: str | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
     depends_on: tuple[str, ...] = ()
-    resource: str | None = Field(
-        default=None, description="Resource the task touches; used for scoping and write locks."
-    )
+    # No planner-supplied ``resource`` field: resources are derived by the tool adapter from
+    # the actual arguments (ToolAdapter.resource_for), so a plan cannot misstate them.
 
     @model_validator(mode="after")
     def _merge_ref_dependencies(self) -> "TaskSpec":
@@ -197,6 +196,7 @@ class UnroutedTask(BaseModel):
 
     task_id: str
     capability: str
+    kind: Literal["no_provider", "unavailable", "denied", "dependency"]
     reason: str
 
 

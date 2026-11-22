@@ -1,11 +1,14 @@
-"""Planning + routing pipeline (lifecycle stages 2–5) and planner construction."""
+"""Planning + routing + authorization pipeline (lifecycle stages 2–6) and planner construction."""
 
 from __future__ import annotations
 
+from pydantic import BaseModel, ConfigDict
+
 from orchestrator.config import Settings
-from orchestrator.contracts import PlanningRequest, PlanProposal, RoutedPlan
-from orchestrator.errors import ConfigurationError
+from orchestrator.contracts import PlanningRequest, PlanProposal, Principal, RoutedPlan
+from orchestrator.errors import ConfigurationError, PermissionDeniedError
 from orchestrator.observability.audit import AuditLog
+from orchestrator.permissions.manager import PermissionManager, PlanAuthorization
 from orchestrator.registry.registry import ToolRegistry
 from orchestrator.routing.planner import Planner, RuleBasedPlanner, ToolCatalog
 from orchestrator.routing.router import CapabilityRouter
@@ -28,30 +31,60 @@ def build_planner(settings: Settings, audit: AuditLog | None = None) -> Planner:
     )
 
 
+class RoutingOutcome(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    proposal: PlanProposal
+    routed: RoutedPlan
+    authorization: PlanAuthorization
+
+
 class RoutingService:
+    """Plans a request for a principal, routes it to permitted tools and authorizes the result.
+
+    Permission checks happen three times, each deterministic and outside the LLM:
+      1. the planner only sees operations the principal could ever use;
+      2. the router only picks candidates permitted for each task's actual inputs;
+      3. the bound plan is authorized task by task (audited), and refused if anything is denied.
+    The execution engine checks once more with fully resolved inputs (Phase 05).
+    """
+
     def __init__(
         self,
         registry: ToolRegistry,
         planner: Planner,
-        router: CapabilityRouter | None = None,
+        permissions: PermissionManager,
         audit: AuditLog | None = None,
     ) -> None:
         self._registry = registry
         self._planner = planner
+        self._permissions = permissions
         self._audit = audit or AuditLog()
-        self._router = router or CapabilityRouter(registry, self._audit)
 
     async def plan_and_route(
-        self, request: PlanningRequest, *, allow_partial: bool = False
-    ) -> tuple[PlanProposal, RoutedPlan]:
-        catalog = ToolCatalog.from_registry(self._registry)
+        self, request: PlanningRequest, principal: Principal, *, allow_partial: bool = False
+    ) -> RoutingOutcome:
+        catalog = ToolCatalog.from_registry(
+            self._registry, include=lambda spec, op: self._permissions.operation_visible(principal, spec, op)
+        )
         proposal = await self._planner.plan(request, catalog)
         self._audit.record(
             "planner.proposal",
             request_id=request.request_id,
+            user_id=principal.user_id,
             planner=proposal.planner,
             tasks=[t.task_id for t in proposal.plan.tasks] if proposal.plan else [],
             unsupported=list(proposal.unsupported),
         )
-        routed = self._router.route(proposal, allow_partial=allow_partial)
-        return proposal, routed
+        router = CapabilityRouter(
+            self._registry, self._audit, candidate_filter=self._permissions.candidate_filter(principal)
+        )
+        routed = router.route(proposal, allow_partial=allow_partial)
+        authorization = self._permissions.authorize_plan(principal, routed, request_id=request.request_id)
+        if not authorization.allowed:
+            # Defence in depth: the router's filter should already have prevented this.
+            raise PermissionDeniedError(
+                "plan contains operations the user is not permitted to perform",
+                details={"denied": {t: authorization.decisions[t].reason for t in authorization.denied}},
+            )
+        return RoutingOutcome(proposal=proposal, routed=routed, authorization=authorization)

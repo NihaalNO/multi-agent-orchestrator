@@ -12,11 +12,18 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from orchestrator.contracts import ExecutionPlan, PlanningRequest, PlanProposal, TaskSpec
+from orchestrator.contracts import (
+    ExecutionPlan,
+    OperationSpec,
+    PlanningRequest,
+    PlanProposal,
+    TaskSpec,
+    ToolSpec,
+)
 from orchestrator.errors import PlanError
 from orchestrator.registry.registry import ToolRegistry
 
@@ -52,10 +59,18 @@ class ToolCatalog(BaseModel):
     entries: tuple[CatalogEntry, ...]
 
     @classmethod
-    def from_registry(cls, registry: ToolRegistry) -> "ToolCatalog":
+    def from_registry(
+        cls,
+        registry: ToolRegistry,
+        include: Callable[[ToolSpec, OperationSpec], bool] | None = None,
+    ) -> "ToolCatalog":
+        """``include`` filters operations (e.g. to those the principal could ever use), so the
+        planner does not design plans around tools it would be refused."""
         entries = []
         for d in registry.list_tools(include_unavailable=False):
             for op in d.spec.operations:
+                if include is not None and not include(d.spec, op):
+                    continue
                 for cap in op.capabilities:
                     entries.append(
                         CatalogEntry(

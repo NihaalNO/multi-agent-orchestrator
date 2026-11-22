@@ -1,0 +1,37 @@
+{
+  "grants": [
+    {
+      "subject": "role:analyst",
+      "tool_id": "file_processing",
+      "max_access": "read",
+      "resources": ["file:*"],
+      "description": "Read any uploaded file"
+    },
+    {
+      "subject": "role:analyst",
+      "tool_id": "file_processing",
+      "effect": "deny",
+      "resources": ["file:private/*"],
+      "description": "...except the private folder"
+    },
+    {
+      "subject": "role:analyst",
+      "tool_id": "web_search",
+      "operation": "search",
+      "max_access": "read"
+    },
+    {
+      "subject": "role:analyst",
+      "tool_id": "python_exec",
+      "operation": "run",
+      "max_access": "execute",
+      "description": "Sandboxed code execution"
+    },
+    {
+      "subject": "role:admin",
+      "max_access": "admin",
+      "allow_sensitive": true,
+      "description": "Everything; sensitive operations still need a separate approver"
+    }
+  ]
+}

@@ -27,8 +27,14 @@ Consequences that the code enforces:
 2. Permissions are evaluated by the `PermissionPolicy` using only the authenticated
    `Principal` and the operation's *registered* metadata — never fields the LLM wrote.
    An LLM cannot raise an operation's access level, mark it non-sensitive, or attach
-   roles to the principal, because none of those values come from the plan.
-3. The execution engine re-checks permission immediately before each invocation
+   roles to the principal, because none of those values come from the plan. The
+   **resource** being checked (e.g. `file:reports/q1.csv`) is derived by the tool adapter
+   from the call's actual arguments (`ToolAdapter.resource_for`), so a plan cannot claim
+   to touch one file while reading another.
+3. Permission is checked in layers: the planner's catalog only lists operations the principal
+   could ever use; the router only selects candidates permitted for each task's inputs; the
+   bound plan is authorized task by task; and the execution engine re-checks permission
+   immediately before each invocation
    (not only at planning time), so a plan that was valid when built but is no longer
    authorized (tool disabled, grant revoked) is still stopped.
 
@@ -155,13 +161,24 @@ says which parts are missing rather than hiding them.
 ### 3.5 Permissions
 
 ```
-Principal         user_id, roles            (from authentication, never from the LLM)
-PermissionGrant   role/user → tool_id (or *) → operation (or *) → max access level, resource patterns
-PermissionDecision allowed, requires_approval, reason, matched_grant
+Principal          user_id, roles           (from API-key authentication, never from the LLM)
+PermissionGrant    subject (role:x | user:y) → tool_id (or *) → operation (or *)
+                   effect allow|deny, max_access, resource globs, allow_sensitive
+PermissionDecision allowed, requires_approval, provisional, reason, matched_grant
+ApprovalRequest    one sensitive call: user, request, task, tool, op, resource,
+                   SHA-256 of canonical args, status, expiry, decided_by
 ```
 
-Default is **deny**. A grant must explicitly cover the tool, operation, access level and
-(if the task names one) the resource.
+Evaluation order: matching deny rules win → allow rules must cover the registered access level
+and the adapter-derived resource → sensitive operations additionally need `allow_sensitive` and
+then a human approval → otherwise **deny**. Resource globs match case-insensitively so deny rules
+cannot be sidestepped by case on case-insensitive filesystems. When a resource depends on an
+upstream output, resource-scoped rules match *provisionally* and the engine must re-check with
+the real value.
+
+Approvals are decided only by the approver role, never by the requester, expire after a TTL, are
+single-use, and are bound to the exact arguments by digest — approving one call cannot authorize
+a different one.
 
 ### 3.6 Errors
 
@@ -200,7 +217,9 @@ infinite or pointless retry loops (spec §6.1).
 | Planner refusals | Server-side refusal fallbacks enabled (`fallbacks="default"`, beta `server-side-fallback-2026-07-01`) | A safety-classifier decline is retried on a fallback model in the same call; a final refusal becomes a `PlanError`. |
 | Planner effort | `medium` (configurable via `ORCH_LLM_EFFORT`) | Opus 5.5's default; planning is short structured output. Raise if plan quality needs it. |
 | Untrusted plan handling | Router re-verifies every proposed binding; invalid ones are overridden with a recorded reason | A hallucinated or injected tool name can never be executed; the audit log shows the override. |
-| Admin API auth | Admin endpoints need `ORCH_ADMIN_TOKEN`; disabled if unset | Default-deny until full auth lands in Phase 04. |
+| API auth | Hashed API keys mapped to principals (`ORCH_PRINCIPALS_PATH`); `admin` / `approver` roles | Simple, deterministic and default-deny (no principals → nobody authenticates). JWT/OAuth can replace `ApiKeyAuthenticator` later without touching policy code. |
+| Policy storage | JSON grant file (`ORCH_POLICY_PATH`), loaded at startup | Reviewable in version control; no database needed yet. No file → no grants → everything denied. |
+| Approval storage | In-memory `ApprovalManager` | Spec §4 (no premature infrastructure). Consequence: approvals do not survive a restart. |
 | Python sandbox | Separate subprocess (`python -I`), timeout, temp working dir, no inherited env | Honest limitation: a subprocess is **not** a security sandbox. Container isolation (Docker) is the planned upgrade; the `isolation` field already models it. |
 
 ---

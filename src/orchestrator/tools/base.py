@@ -24,6 +24,17 @@ OperationHandler = Callable[[dict[str, Any], ExecutionContext], Awaitable[dict[s
 HANDLER_PREFIX = "op_"
 
 
+class _Pending:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "RESOURCE_PENDING"
+
+
+RESOURCE_PENDING: object = _Pending()
+"""Sentinel from ``ToolAdapter.resource_for``: the resource depends on an unresolved $ref."""
+
+
 class ToolAdapter(ABC):
     spec: ClassVar[ToolSpec]
 
@@ -57,6 +68,16 @@ class ToolAdapter(ABC):
         """Call the handler directly. The execution engine wraps this with validation,
         authorization, timeouts and retries — do not call it from orchestration code."""
         return await self.handler(operation)(args, ctx)
+
+    def resource_for(self, operation: str, args: dict[str, Any]) -> str | None | object:
+        """The resource this call touches, derived from its *actual* arguments, e.g.
+        ``file:reports/q1.csv``. Used for resource-scoped permissions and write locks.
+
+        Return ``None`` if the operation has no resource, or ``RESOURCE_PENDING`` if the
+        resource depends on a ``$ref`` that is only resolved at execution time.
+        Override in adapters whose operations touch identifiable resources.
+        """
+        return None
 
     async def health_check(self) -> bool:
         """Override for tools with external dependencies. Default: healthy."""

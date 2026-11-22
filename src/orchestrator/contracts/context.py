@@ -16,4 +16,4 @@ class ExecutionContext(BaseModel):
     principal: Principal
     attempt: int = 1
     idempotency_key: str | None = None
-    resource: str | None = None
+    resource: str | None = None  # adapter-derived (ToolAdapter.resource_for), never plan-supplied
