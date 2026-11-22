@@ -68,6 +68,9 @@ class Settings(BaseModel):
         description="Groq/Ollama output budget per plan, reasoning included. Groq counts it against the "
                     "account's tokens-per-minute limit, so keep prompt + budget under that limit.",
     )
+    # Grounded answers: after the tools run, the planner's provider writes an answer that cites
+    # the tool results, and code checks every claim. "auto": on for Groq/Ollama planners.
+    answers: Literal["auto", "off"] = "auto"
     llm_json_mode: Literal["auto", "json_schema", "json_object"] = Field(
         default="auto", description="Groq/Ollama structured-output mode; auto picks per provider and model."
     )

@@ -29,6 +29,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orchestrator.answers import Answer, AnswerComposer, build_composer, compose_answer
 from orchestrator.config import Settings
 from orchestrator.contracts import (
     ApprovalStatus,
@@ -101,6 +102,8 @@ class RequestRecord(BaseModel):
     stages: tuple[StageTiming, ...] = ()
     executions: int = 0
     replans: tuple[AttemptSummary, ...] = ()  # failed attempts that were re-planned, oldest first
+    answer: Answer | None = None      # grounded answer written from the tool results (see answers.py)
+    answer_note: str = ""              # why there is no answer, when one was expected
 
     @property
     def pending_approvals(self) -> dict[str, str]:
@@ -221,6 +224,12 @@ def build_summary(record: RequestRecord) -> str:
         if report.uncertainty:
             lines.append("Caveats:")
             lines.extend(f"- {note}" for note in report.uncertainty)
+    if record.answer is not None:
+        a = record.answer
+        lines.append(f"Answer: {a.supported} of {len(a.claims)} claim(s) checked against the evidence"
+                     f"{'' if a.supported == len(a.claims) else ' (the rest are marked)'}.")
+    elif record.answer_note:
+        lines.append(f"No written answer: {record.answer_note}")
     if record.pending_approvals:
         lines.append("Waiting for approval: " + ", ".join(
             f"{task} (approval {aid})" for task, aid in sorted(record.pending_approvals.items())) + ".")
@@ -241,8 +250,10 @@ class Orchestrator:
         settings: Settings | None = None,
         store: RequestStore | None = None,
         idempotency_backend: IdempotencyBackend | None = None,
+        composer: AnswerComposer | None = None,
     ) -> None:
         self.settings = settings or Settings()
+        self.composer = composer
         self.registry = registry
         self.permissions = permissions
         self.approvals = approvals
@@ -269,8 +280,9 @@ class Orchestrator:
         store: RequestStore | None = None,
         idempotency_backend: IdempotencyBackend | None = None,
     ) -> "Orchestrator":
+        composer = build_composer(settings) if planner is None else None
         return cls(registry, planner or build_planner(settings, audit), permissions, approvals, audit,
-                   settings=settings, store=store, idempotency_backend=idempotency_backend)
+                   settings=settings, store=store, idempotency_backend=idempotency_backend, composer=composer)
 
     # ------------------------------------------------------------------ queries
 
@@ -377,8 +389,34 @@ class Orchestrator:
             record, report, extra_runs = await self._replan(record, report, request, principal, stages,
                                                             idempotency_key=idempotency_key, allow_partial=allow_partial)
             runs += extra_runs
-        return self._finish(record, started, stages, state=_state_for(report), report=report,
-                            executions=record.executions + runs)
+        state = _state_for(report)
+        answer_fields = await self._answer(record, report, state, stages)
+        return self._finish(record, started, stages, state=state, report=report,
+                            executions=record.executions + runs, **answer_fields)
+
+    async def _answer(self, record: RequestRecord, report: ExecutionReport, state: RequestState,
+                      stages: list[StageTiming]) -> dict[str, Any]:
+        """Stage 11: a grounded answer from the results. Never fails the request: a composer error
+        leaves the deterministic summary as the response and says why."""
+        if self.composer is None or state != RequestState.COMPLETED:
+            return {}
+        t = time.perf_counter()
+        try:
+            answer = await compose_answer(self.composer, record.text, record.plan, report)
+        except Exception as exc:  # the answer is an extra; the request already succeeded
+            stages.append(StageTiming(stage="answer", duration_ms=self._ms(t)))
+            self.audit.record("answer.failed", request_id=record.request_id, user_id=record.user_id,
+                              composer=self.composer.name, error=type(exc).__name__)
+            return {"answer": None, "answer_note": f"the answer could not be written ({type(exc).__name__})."}
+        stages.append(StageTiming(stage="answer", duration_ms=self._ms(t)))
+        if answer is None:
+            return {}
+        self.audit.record(
+            "answer.composed", request_id=record.request_id, user_id=record.user_id, composer=answer.composer,
+            model=answer.model, evidence=len(answer.evidence), claims=len(answer.claims), supported=answer.supported,
+            statuses={s: sum(c.status == s for c in answer.claims) for s in ("supported", "unverified", "uncited")},
+        )
+        return {"answer": answer, "answer_note": ""}
 
     async def _run(self, record: RequestRecord, principal: Principal, stages: list[StageTiming], *,
                    idempotency_key: str | None, prior: dict[str, Any] | None, label: str = "") -> ExecutionReport:

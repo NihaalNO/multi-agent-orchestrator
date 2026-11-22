@@ -96,6 +96,20 @@ input[type=password], textarea {
 .answer .label { color: var(--muted); font-size: 13px; }
 .answer .value { font-size: 18px; font-weight: 600; }
 .summary { white-space: pre-wrap; margin: 8px 0 0; font-size: 14px; }
+.small { font-size: 12px; margin: 6px 0 0; }
+.answer-block { margin-top: 8px; display: grid; gap: 6px; }
+.grounded { margin: 0; font-size: 16px; line-height: 1.6; }
+.cite { display: inline-block; font-size: 11px; font-weight: 700; line-height: 1; padding: 3px 5px; margin: 0 1px;
+  border-radius: 5px; background: var(--user); color: var(--accent); text-decoration: none; vertical-align: 2px; }
+.cite.bad { background: transparent; color: var(--bad); border: 1px solid currentColor; }
+.claims { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
+.claims .status { font-size: 11px; }
+.claims .note { display: block; color: var(--warn); font-size: 12px; margin-top: 2px; }
+.gaps { font-size: 14px; }
+.gaps ul { margin: 4px 0 0; padding-left: 20px; }
+.label-strong { font-weight: 600; }
+.sources li.flash { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+@media (prefers-reduced-motion: no-preference) { .sources li { transition: outline-color .3s; } }
 .sources { margin: 2px 0 4px; padding-left: 22px; display: grid; gap: 8px; font-size: 14px; }
 .sources a { color: var(--accent); font-weight: 600; text-decoration: none; }
 .sources a:hover { text-decoration: underline; }

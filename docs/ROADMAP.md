@@ -179,11 +179,11 @@ tested before they change. Phase 09 is a prerequisite; Phase 10 is the main diff
 Done when: code runs in the sandbox by default with the same tests passing, the chat shows steps as
 they finish, and a follow-up can use an earlier result without leaking another user's data.
 
-## Phase 10 — Verifiable answers  ⬜
+## Phase 10 — Verifiable answers  🟡
 
 | Item | Status | Notes |
 |---|---|---|
-| Every number linked to its source | ⬜ | each figure in the final answer must match a tool output; a figure with no source is flagged, never shown as fact |
+| Every number linked to its source | 🟡 | grounded answers (`orchestrator/answers.py`): the LLM answer cites numbered evidence and code checks every number against it; unconfirmed claims are marked. Done for Groq/Ollama planners and verified live with Groq + Tavily; Anthropic/Gemini composers to follow |
 | Signed receipts | ⬜ | per request: plan, policy version, argument and output hashes, approvals, chained in the audit log so tampering is detectable |
 | Replay | ⬜ | re-run a request from its receipt and compare outputs: audits, regression checks, "would this still give the same answer?" |
 

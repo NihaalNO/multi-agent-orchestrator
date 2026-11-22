@@ -29,15 +29,16 @@ cross-checks the results, and returns one consolidated answer — with every dec
 8. [Running the server](#running-the-server)
 9. [Using the API](#using-the-api)
 10. [Built-in tools](#built-in-tools)
-11. [Trustworthy results: conflicts and caveats](#trustworthy-results-conflicts-and-caveats)
-12. [Reliability: retries, duplicates, restarts](#reliability-retries-duplicates-restarts)
-13. [Observability](#observability)
-14. [Extending the orchestrator](#extending-the-orchestrator)
-15. [Examples](#examples)
-16. [Testing and CI](#testing-and-ci)
-17. [Project structure](#project-structure)
-18. [Status and known limitations](#status-and-known-limitations)
-19. [Documentation](#documentation)
+11. [Grounded answers: explainable responses](#grounded-answers-explainable-responses)
+12. [Trustworthy results: conflicts and caveats](#trustworthy-results-conflicts-and-caveats)
+13. [Reliability: retries, duplicates, restarts](#reliability-retries-duplicates-restarts)
+14. [Observability](#observability)
+15. [Extending the orchestrator](#extending-the-orchestrator)
+16. [Examples](#examples)
+17. [Testing and CI](#testing-and-ci)
+18. [Project structure](#project-structure)
+19. [Status and known limitations](#status-and-known-limitations)
+20. [Documentation](#documentation)
 
 ---
 
@@ -476,6 +477,29 @@ Full details, error codes and the complete record format: [docs/API.md](docs/API
 | **File processing** | `read_csv`, `read_text`, `list_files` | `data.tabular.load`, `file.read.csv`, `file.read.text`, `file.list` | read-only, confined to the upload folder, 5 MB cap |
 | **Python execution** | `run` | `data.compute`, `code.python.execute` | separate process, time limit, no inherited secrets — *not* a sandbox |
 | **Web search** | `search` | `web.search` | registered only with a real backend (`ORCH_SEARCH_BACKEND`) |
+
+---
+
+## Grounded answers: explainable responses
+
+With a Groq or Ollama planner (`ORCH_ANSWERS=auto`), the response also gets a written answer — and
+the same rule applies as for plans: **the LLM proposes, code checks**.
+
+1. **Evidence** is built from the steps that succeeded and numbered `E1`, `E2`…: a value computed by
+   Python, each web result (title, site, date, quoted snippet), a file read. CSV rows are never sent;
+   a CSV becomes its size and column names.
+2. **The LLM writes the answer** from that evidence only, citing ids after each statement
+   ("Revenue averaged 129,325 [E2]"), listing its claims with their evidence and what the evidence
+   does not answer.
+3. **Code checks every claim**: cited ids must exist, and every number must appear in the evidence it
+   cites (thousands separators, the claim's own rounding and `%` allowed). Each claim is marked
+   **checked**, **unverified** (with the number that was not found) or **no evidence**.
+
+In the chat, citations are chips that jump to the evidence item, "How this answer is supported"
+lists every claim with its mark (opened automatically when something is unconfirmed), and gaps are
+shown, not papered over. If writing the answer fails, the request still succeeds with the
+deterministic summary and says why. The audit log records counts only (`answer.composed`), never the
+answer text. Anthropic and Gemini planners keep the deterministic summary for now.
 
 ---
 
