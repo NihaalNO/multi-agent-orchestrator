@@ -200,7 +200,7 @@ infinite or pointless retry loops (spec §6.1).
 | 7 Execution planning | `ExecutionPlan` dependency graph (`layers()` for inspection; the scheduler uses a ready queue) |
 | 8 Tool execution | `DagScheduler.execute()` → `ExecutionEngine.run_task()` |
 | 9 Result validation | engine output-schema check; failures and their skipped dependents are reported per task |
-| 10 Conflict resolution | `ConflictResolver.resolve()` |
+| 10 Conflict resolution | `ConflictResolver.resolve(plan, report)` → conflicts, reconciled values, uncertainty notes |
 | 11 Aggregation, 12 Response | `Orchestrator` builds `ExecutionReport` (+ optional LLM summary) |
 
 ---
@@ -225,6 +225,9 @@ infinite or pointless retry loops (spec §6.1).
 | Retry safety | Non-idempotent operations retry only on `TransientToolError`, never after a timeout | After a timeout the write may already have happened; retrying could apply it twice. |
 | Duplicate protection | Idempotency key (per request) → non-idempotent calls run once per (user, key, tool, op, args) for the TTL; only successes are cached | Covers client double-submits and concurrent duplicates. Two identical non-idempotent calls inside one plan under one key also run once — the conservative choice. |
 | Write coordination | In-process per-resource `asyncio` locks | Enough for a single process. Multiple orchestrator processes would need a distributed lock (Redis), deferred per spec §4. |
+| What gets compared | Only tasks the planner put in the same `compare_group`, identical calls, and URL-keyed result lists | Comparing arbitrary outputs of different tasks would invent conflicts between answers to different questions. The planner marks deliberate cross-checks; it cannot use the field to affect permissions or tool choice. |
+| Resolution policy order | normalization → majority (≥3 sources) → recency → source priority, configurable | Cheapest certain fix first; registered reliability is the weakest evidence, so it comes last and needs a clear margin (0.2). |
+| Unresolvable conflicts | Escalated with every candidate; the value is reported as `None` | Spec §2.5: never silently fabricate a resolution. `ExecutionReport.requires_review` tells the caller a human should look. |
 | Approval timing | Approvals are requested and consumed at execution time, with resolved arguments | The approved digest must match the exact arguments, which may depend on upstream outputs unknown at plan time. |
 
 ---
@@ -256,7 +259,7 @@ src/orchestrator/
   permissions/              policy engine + approvals                 (Phase 04)
   execution/                engine, DAG scheduler, $ref resolution,
                             idempotency store, resource locks        (Phase 05)
-  resolution/               conflict resolver                         (Phase 06)
+  resolution/               conflict detection + resolution policies  (Phase 06)
   core.py                   Orchestrator facade                       (Phase 07)
   api/app.py                FastAPI application
 tests/                      pytest, mirrors src layout

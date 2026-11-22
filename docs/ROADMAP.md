@@ -80,11 +80,25 @@ spec §13.12. Update it in the same commit as the work it describes.
 | Per-resource write locks | ✅ | `ResourceLocks` |
 | Resuming an execution after approval without re-running other tasks | ⬜ | re-submitting re-runs idempotent tasks; non-idempotent ones dedupe via idempotency key. Execution state store arrives with the facade (Phase 07). |
 
-## Phase 06 — Conflict Resolution  ⬜
+## Phase 06 — Conflict Resolution  ✅
 
-- ⬜ Duplicate detection, contradiction detection on comparable fields
-- ⬜ Source-priority (reliability) and timestamp policies
-- ⬜ Escalation: unresolved conflicts reported, never silently resolved
+| Item | Status | Where |
+|---|---|---|
+| Output schema validation | ✅ | engine (Phase 05); failures become `failed` tasks |
+| Partial-failure reporting (some tasks did not complete) | ✅ | `ConflictKind.PARTIAL_FAILURE` + uncertainty note |
+| Duplicate detection: identical calls (same tool, op, argument digest) | ✅ | merged if outputs match, cross-checked if not |
+| Duplicate detection: result lists merged by normalised URL | ✅ | `resolved["merged:<capability>"]`, `found_by` per item |
+| Cross-checks between tasks the planner put in the same `compare_group` | ✅ | field-by-field comparison with numeric tolerance |
+| Format mismatches ("200" vs 200) | ✅ | `normalization` policy |
+| Source-priority (registered reliability) and timestamp (recency) policies | ✅ | `source_priority`, `recency`; plus `majority` (≥3 sources) |
+| Configurable policy order and thresholds | ✅ | `ResolverConfig` |
+| Concurrent writes to the same resource without a dependency ordering them | ✅ | `ConflictKind.CONCURRENT_WRITE`, escalated |
+| Staleness of source timestamps | ✅ | `ConflictKind.STALE` (default: older than 365 days) |
+| Escalation: unresolved conflicts reported with all candidates, value left unknown | ✅ | `Conflict.escalated`, `ExecutionReport.requires_review` |
+| Conflict decisions audited | ✅ | `conflict.detected` / `.resolved` / `.escalated` |
+| Planner can request cross-checks | ✅ | `compare_group` in the Claude planner's schema and prompt |
+| Automatic re-run / extra verification to break a tie | ⬜ | escalates instead; re-planning belongs to the orchestrator facade (Phase 07) |
+| Human sign-off workflow for escalated conflicts | ⬜ | flagged via `requires_review`; an approval-style flow can reuse Phase 04 approvals if needed |
 
 ## Phase 07 — Integration and Testing  ⬜
 
@@ -110,6 +124,6 @@ spec §13.12. Update it in the same commit as the work it describes.
 | 5 | Three independent tasks concurrently | ✅ `test_execution.py` (timing + observed concurrency) |
 | 6 | Sequential dependencies | ✅ `test_execution.py` (start order + `$ref` outputs) |
 | 7 | Tool timeout | ✅ `test_execution.py` (retried for idempotent ops, not for writes) |
-| 8 | Conflicting tool outputs | ⬜ Phase 06 |
+| 8 | Conflicting tool outputs | ✅ `tests/test_resolution.py` (incl. end-to-end through the scheduler) |
 | 9 | Duplicate execution requests | ✅ `test_execution.py` (concurrent + later duplicates run once) |
 | 10 | Partial execution failure | ✅ `test_execution.py` (dependents skipped, others succeed) |

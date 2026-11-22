@@ -61,6 +61,12 @@ class TaskSpec(BaseModel):
     operation: str | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
     depends_on: tuple[str, ...] = ()
+    compare_group: str | None = Field(
+        default=None,
+        pattern=IDENTIFIER_PATTERN,
+        description="Tasks sharing a group independently answer the same question; their outputs "
+        "are cross-checked by conflict resolution. Affects only which results are compared.",
+    )
     # No planner-supplied ``resource`` field: resources are derived by the tool adapter from
     # the actual arguments (ToolAdapter.resource_for), so a plan cannot misstate them.
 

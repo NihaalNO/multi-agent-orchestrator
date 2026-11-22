@@ -140,12 +140,16 @@ class ExecutionEngine:
             raise ValueError(f"task {task.task_id!r} is not bound to a tool")
         tool_id, op_name = task.tool_id, task.operation
         started = _now()
+        try:
+            digest: str | None = args_digest(args)
+        except (TypeError, ValueError):  # not JSON-serialisable; input validation will reject it
+            digest = None
         self._audit.record("task.started", request_id=run.request_id, execution_id=run.execution_id,
                            task_id=task.task_id, tool_id=tool_id, operation=op_name)
 
         def finish(status: TaskStatus, **fields: Any) -> TaskResult:
             result = TaskResult(task_id=task.task_id, tool_id=tool_id, operation=op_name, status=status,
-                                started_at=started, finished_at=_now(), **fields)
+                                started_at=started, finished_at=_now(), args_digest=digest, **fields)
             self._audit.record(
                 "task.finished", request_id=run.request_id, execution_id=run.execution_id,
                 task_id=task.task_id, tool_id=tool_id, status=status.value, attempts=result.attempts,
@@ -198,7 +202,7 @@ class ExecutionEngine:
         # 4: idempotency for non-idempotent operations.
         if not op.idempotent and run.idempotency_key:
             key = hashlib.sha256(json.dumps(
-                [run.principal.user_id, run.idempotency_key, tool_id, op_name, args_digest(args)]
+                [run.principal.user_id, run.idempotency_key, tool_id, op_name, digest]
             ).encode()).hexdigest()
             result = await self._idempotency.run_once(key, approve_and_execute)
             if result.deduplicated:

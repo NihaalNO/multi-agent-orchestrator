@@ -254,3 +254,15 @@ def test_build_planner_from_settings():
     assert isinstance(planner, AnthropicPlanner)
     with pytest.raises(ConfigurationError):
         build_planner(Settings(llm_provider="openai"))
+
+
+async def test_anthropic_planner_passes_compare_group_through(registry):
+    plan = {**LLM_PLAN, "tasks": [
+        {**llm_task("a", "web.search", {"query": "rate one"}), "compare_group": "rate"},
+        {**llm_task("b", "web.search", {"query": "rate two"}), "compare_group": "rate"},
+        llm_task("c", "web.search", {"query": "other"}),
+    ]}
+    client, messages = fake_client(response(plan))
+    p = await AnthropicPlanner(client).plan(PlanningRequest(text="x"), ToolCatalog.from_registry(registry))
+    assert [t.compare_group for t in p.plan.tasks] == ["rate", "rate", None]
+    assert "compare_group" in PLAN_SCHEMA["properties"]["tasks"]["items"]["required"]

@@ -57,6 +57,7 @@ class TaskResult(BaseModel):
     approval_id: str | None = Field(default=None, description="Set when the task awaits or used an approval.")
     deduplicated: bool = Field(default=False, description="Result reused from an earlier identical call.")
     resource: str | None = None
+    args_digest: str | None = Field(default=None, description="SHA-256 of the resolved arguments.")
 
     @property
     def duration_ms(self) -> float | None:
@@ -74,16 +75,32 @@ class ConflictKind(StrEnum):
     PARTIAL_FAILURE = "partial_failure"
 
 
+class ConflictCandidate(BaseModel):
+    """One source's version of a disputed value."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str
+    tool_id: str | None
+    value: Any = None
+    reliability: float | None = None
+    observed_at: datetime | None = Field(default=None, description="Source timestamp, if the output had one.")
+
+
 class Conflict(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: ConflictKind
     task_ids: tuple[str, ...]
     description: str
+    field: str | None = Field(default=None, description="Output path in dispute, e.g. 'result.mean'.")
+    candidates: tuple[ConflictCandidate, ...] = ()
     resolved: bool = False
     resolution: str | None = None
     policy: str | None = Field(default=None, description="Name of the policy that resolved it.")
-    escalated: bool = False
+    chosen_task_id: str | None = None
+    value: Any = Field(default=None, description="The accepted value, only when resolved.")
+    escalated: bool = Field(default=False, description="Needs a human: evidence was insufficient or the stakes high.")
 
 
 class ExecutionStatus(StrEnum):
@@ -103,4 +120,13 @@ class ExecutionReport(BaseModel):
     task_results: tuple[TaskResult, ...]
     conflicts: tuple[Conflict, ...] = ()
     final_output: dict[str, Any] = Field(default_factory=dict)
+    resolved: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Reconciled values: per compare group, and merged results per capability.",
+    )
+    uncertainty: tuple[str, ...] = Field(default=(), description="Plain-language caveats about the result.")
     summary: str = ""
+
+    @property
+    def requires_review(self) -> bool:
+        return any(c.escalated for c in self.conflicts)

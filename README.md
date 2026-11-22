@@ -10,10 +10,11 @@ deterministic Python validates, authorizes and executes them.
 
 ## Status
 
-Phases 01 (foundation), 02 (dynamic tool registry), 04 (permissions) and 05 (parallel
-execution) are complete; Phase 03 (planning and capability routing) is complete apart from a
-live web-search backend. The MVP request runs end to end in tests. Next is Phase 06 (conflict
-resolution). See the roadmap for details and open decisions.
+Phases 01 (foundation), 02 (dynamic tool registry), 04 (permissions), 05 (parallel execution)
+and 06 (conflict resolution) are complete; Phase 03 (planning and capability routing) is complete
+apart from a live web-search backend. All ten essential test scenarios from the spec pass. Next is
+Phase 07: wiring everything behind one orchestrator facade and a `POST /requests` endpoint. See
+the roadmap for details and open decisions.
 
 ## Planner configuration
 
