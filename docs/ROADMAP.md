@@ -18,7 +18,6 @@ Remaining before a production rollout:
 |---|---|---|
 | Live run of the Claude planner | ⛔ | an Anthropic API key, then `python examples/mvp_demo.py --planner anthropic` |
 | Live web-search backend | ⛔ | a decision: keyed search API or Anthropic's server-side web search |
-| Docker smoke test in CI | 🟡 | fix ready; needs a re-run after push |
 | Persistent requests/approvals/idempotency (multi-instance) | ⬜ | a database + distributed lock, when one instance is no longer enough |
 | Stronger Python isolation | ⬜ | container execution, if untrusted users get `python_exec` |
 | File upload endpoint, LLM-written summaries, OpenTelemetry export | ⬜ | optional extensions (spec §11) |
@@ -147,11 +146,11 @@ Remaining before a production rollout:
 | Tool registration documented | ✅ | `docs/TOOLS.md` |
 | API endpoints documented | ✅ | `docs/API.md` (+ live OpenAPI at `/docs`) |
 | Deployment configuration | ✅ | `Dockerfile`, `docker-compose.yml`, `.env.example`, `requirements.lock`, `docs/DEPLOYMENT.md` |
-| Docker image built and smoke-tested | 🟡 | builds in CI (first run, 2026-11-22). The smoke test failed because the job started the image without the `/config` it requires; fixed (example config mounted, logs always printed), awaiting a re-run |
+| Docker image built and smoke-tested | ✅ | CI builds it, checks it refuses to start without `/config`, then starts it with the example config and probes `/health` and auth (passing since run 44984412929, 2026-11-22). Not built on the development machine (no Docker there). |
 | CLI: `serve`, `hash-key`, `check-config` | ✅ | `python -m orchestrator` |
 | Example workflows | ✅ | `examples/mvp_demo.py`, `custom_tool.py`, `approval_workflow.py` (all run in tests) |
 | Monitoring and logging | ✅ | JSON logs to stdout, optional audit mirroring, `/admin/metrics`, health check |
-| CI | 🟡 | `.github/workflows/ci.yml`. First run: tests and examples pass on Linux 3.11, Linux 3.14 and Windows 3.14; Docker smoke test fixed, awaiting a re-run |
+| CI | ✅ | `.github/workflows/ci.yml`: tests and examples on Linux 3.11, Linux 3.14 and Windows 3.14, plus the Docker job — all passing (run 44984412929). The first run's Docker failure was a CI setup error, fixed in f412135. |
 | Docs kept in sync with code | ✅ | `tests/test_docs_and_cli.py` fails if a setting or route is undocumented, a documented setting no longer exists, or a doc link breaks |
 | Minimum Python version verified | ✅ | full suite passes on 3.11 (installed from `requirements.lock`) and 3.14 |
 

@@ -30,9 +30,9 @@ Anthropic API key set, `examples\mvp_demo.py --planner anthropic` lets Claude do
 
 ## Status
 
-All eight phases are complete and all ten essential test scenarios from the spec pass. Before a
-production rollout: a first live run of the Claude planner, a live web-search backend, and a first
-CI run of the Docker image. See the roadmap's overall status.
+All eight phases are complete, all ten essential test scenarios from the spec pass, and CI (tests
+on Linux and Windows, plus the Docker image) is green. Before a production rollout: a first live
+run of the Claude planner and a live web-search backend. See the roadmap's overall status.
 
 ## Planner configuration
 

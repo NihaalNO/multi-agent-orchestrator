@@ -2,9 +2,8 @@
 
 ## Quick start (Docker)
 
-> The image definition is provided but was **not built during development** (Docker was not
-> available on the development machine). The CI workflow (`.github/workflows/ci.yml`) is set up
-> to build and smoke-test it on every push to `main` and every pull request.
+> CI (`.github/workflows/ci.yml`) builds and smoke-tests this image on every push to `main` and
+> every pull request. The `docker compose` flow below has not been run end to end by hand.
 > The image expects `/config/policy.json` and `/config/principals.json` to be mounted and will not
 > start without them.
 
