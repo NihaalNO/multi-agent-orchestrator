@@ -26,13 +26,15 @@ python -m venv .venv
 This runs the spec's MVP request (read a CSV, average its revenue with Python, search for
 benchmarks) through the whole pipeline and prints the summary. `examples/custom_tool.py` adds a tool
 at runtime; `examples/approval_workflow.py` walks through a sensitive operation's approval. With an
-Anthropic API key set, `examples\mvp_demo.py --planner anthropic` lets Claude do the planning.
+Anthropic API key set, `examples\mvp_demo.py --planner anthropic --search anthropic` lets Claude do
+the planning and run real web searches.
 
 ## Status
 
 All eight phases are complete, all ten essential test scenarios from the spec pass, and CI (tests
-on Linux and Windows, plus the Docker image) is green. Before a production rollout: a first live
-run of the Claude planner and a live web-search backend. See the roadmap's overall status.
+on Linux and Windows, plus the Docker image) is green. Live web search is available through Claude
+(`ORCH_SEARCH_BACKEND=anthropic`). Before a production rollout: a first live run of the Claude
+planner and the search backend, which needs an Anthropic API key. See the roadmap's overall status.
 
 ## Planner configuration
 

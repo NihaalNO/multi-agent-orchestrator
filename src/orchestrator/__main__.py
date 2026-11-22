@@ -97,11 +97,16 @@ def check_config(settings: Settings, environ: dict[str, str] | None = None) -> t
         except ConfigurationError as exc:
             errors.append(f"policy: {exc.message}")
 
-    if settings.llm_provider == "anthropic" and not (
-        settings.llm_api_key or env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN")
-    ):
+    has_key = bool(settings.llm_api_key or env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN"))
+    if settings.llm_provider == "anthropic" and not has_key:
         warnings.append("planner is 'anthropic' but no API key is set in the environment; the SDK may still find an "
                         "`ant auth login` profile, otherwise planning will fail (requests are rejected, not run).")
+    if settings.search_backend == "anthropic" and not has_key:
+        warnings.append("search backend is 'anthropic' but no API key is set in the environment; searches will fail "
+                        "unless the SDK finds an `ant auth login` profile.")
+    if settings.search_backend == "none":
+        warnings.append("ORCH_SEARCH_BACKEND is 'none': no web search tool is registered, so requests that need "
+                        "web search are only partly answered (or rejected).")
     return errors, warnings
 
 

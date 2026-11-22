@@ -36,6 +36,10 @@ class Settings(BaseModel):
     # Tools
     file_tool_root: Path = Path("data/uploads")
     python_exec_timeout_s: float = Field(default=10.0, gt=0, le=120)
+    # "none": no web search tool is registered. "anthropic": Claude's server-side web search,
+    # using the same credentials as the planner (billed per search on top of tokens).
+    search_backend: Literal["none", "anthropic"] = "none"
+    search_max_uses: int = Field(default=3, ge=1, le=10, description="Web searches Claude may run per call.")
 
     # Planner. "anthropic" uses Claude; "rule_based" is the deterministic offline planner.
     llm_provider: str = "anthropic"

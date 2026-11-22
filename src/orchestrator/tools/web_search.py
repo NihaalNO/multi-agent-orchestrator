@@ -80,7 +80,8 @@ def build_spec(reliability: float = 0.6) -> ToolSpec:
         # Web content is less trustworthy than local data; conflict resolution uses this.
         reliability=reliability,
         constraints=ExecutionConstraints(
-            timeout_s=20, max_retries=2, max_concurrency=4, cost=1.0, expected_latency_ms=1500
+            # A Claude-backed search runs several searches and model turns; allow for that.
+            timeout_s=90, max_retries=2, max_concurrency=4, cost=1.0, expected_latency_ms=15000
         ),
         operations=(
             OperationSpec(

@@ -231,6 +231,7 @@ infinite or pointless retry loops (spec §6.1).
 | Request records | In-memory `RequestStore`; one record per request, updated in place on resume | Enough for a single process and the MVP; a database is the swap point when restarts must not lose requests. |
 | Metrics source | Derived from audit events by an `AuditSink` | One source of truth: metrics can never disagree with the audit log. |
 | Result summary | Deterministic text built from the report | Reproducible and testable; an LLM summary can be layered on later without changing the record shape. |
+| Search results from Claude | Only structured `web_search_tool_result` blocks (titles, URLs, dates) and citation quotes (snippets); the model's prose is ignored | The search tool must report what the web returned, not what a model wrote; a hallucinated URL is impossible by construction. |
 | Default web search | Not registered without a real backend | A tool that always returns nothing would turn "not searched" into "nothing found". The gap is reported as a caveat instead. |
 | Approval timing | Approvals are requested and consumed at execution time, with resolved arguments | The approved digest must match the exact arguments, which may depend on upstream outputs unknown at plan time. |
 
@@ -239,9 +240,9 @@ infinite or pointless retry loops (spec §6.1).
 ## 6. Open questions (need a decision before the phase that uses them)
 
 1. ~~LLM provider~~ — decided: Anthropic (Claude Opus 5.5).
-2. **Web search backend**: a keyed API (Tavily, Brave, SerpAPI), or Anthropic's server-side
-   web search tool (same API key as the planner, billed per search)? Tests use the static
-   backend regardless; adding one is a single `SearchBackend` class.
+2. ~~Web search backend~~ — decided: Anthropic's server-side web search
+   (`AnthropicSearchBackend`, opt-in via `ORCH_SEARCH_BACKEND=anthropic`). Other providers remain a
+   single `SearchBackend` class.
 3. **Python isolation strength**: subprocess isolation is implemented. Is that acceptable for
    the MVP, or should code run in Docker (needs Docker on the target machine)?
 

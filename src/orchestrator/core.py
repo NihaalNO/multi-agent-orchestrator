@@ -136,11 +136,20 @@ async def register_default_tools(
     registry: ToolRegistry, settings: Settings, *, search_backend: SearchBackend | None = None
 ) -> None:
     """File processing and Python execution always; web search only with a real backend —
-    registering one that returns nothing would present 'no results' as an answer."""
+    registering one that returns nothing would present 'no results' as an answer.
+    ``search_backend`` overrides ``settings.search_backend``."""
     root = settings.file_tool_root
     root.mkdir(parents=True, exist_ok=True)
     await registry.register(FileProcessingTool(root), replace_existing=True)
     await registry.register(PythonExecTool(timeout_s=settings.python_exec_timeout_s), replace_existing=True)
+    if search_backend is None and settings.search_backend == "anthropic":
+        import anthropic
+
+        from orchestrator.tools.anthropic_search import AnthropicSearchBackend
+
+        key = settings.llm_api_key.get_secret_value() if settings.llm_api_key else None
+        client = anthropic.AsyncAnthropic(api_key=key) if key else anthropic.AsyncAnthropic()
+        search_backend = AnthropicSearchBackend(client, model=settings.llm_model, max_uses=settings.search_max_uses)
     if search_backend is not None:
         await registry.register(WebSearchTool(search_backend), replace_existing=True)
 

@@ -129,6 +129,16 @@ grant access in the policy file — registering a tool authorizes no one:
 {"subject": "role:finance", "tool_id": "currency", "operation": "convert", "max_access": "read"}
 ```
 
+## Search backends
+
+The web search tool delegates to a `SearchBackend` (`name`, `async search(query, max_results)`,
+`async health_check()`). Two ship with the project: `StaticSearchBackend` (fixed results for tests
+and demos) and `AnthropicSearchBackend` (Claude's server-side web search; enable it with
+`ORCH_SEARCH_BACKEND=anthropic`). Its result titles, URLs and dates come only from the API's
+structured search results and its snippets only from citations quoted from those pages, so the
+model cannot invent a source. To use another provider, implement the three members and pass the
+backend to `register_default_tools(..., search_backend=...)`.
+
 ## 6. Test it
 
 The patterns in `tests/` apply directly: call `await tool.invoke("convert", args, ctx)` for unit

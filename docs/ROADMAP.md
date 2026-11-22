@@ -17,7 +17,7 @@ Remaining before a production rollout:
 | Item | State | Needs |
 |---|---|---|
 | Live run of the Claude planner | ⛔ | an Anthropic API key, then `python examples/mvp_demo.py --planner anthropic` |
-| Live web-search backend | ⛔ | a decision: keyed search API or Anthropic's server-side web search |
+| Live web search run | ⛔ | built (`ORCH_SEARCH_BACKEND=anthropic`); needs an Anthropic API key, then `python examples/mvp_demo.py --planner anthropic --search anthropic` |
 | Persistent requests/approvals/idempotency (multi-instance) | ⬜ | a database + distributed lock, when one instance is no longer enough |
 | Stronger Python isolation | ⬜ | container execution, if untrusted users get `python_exec` |
 | File upload endpoint, LLM-written summaries, OpenTelemetry export | ⬜ | optional extensions (spec §11) |
@@ -48,14 +48,14 @@ Remaining before a production rollout:
 | Input / output schema validation | ✅ | `validate_input`, `validate_output` |
 | Registry consistency under concurrency | ✅ | lock-serialised writes, copy-on-write snapshots |
 
-## Phase 03 — Intelligent Routing  🟡 (only the live search backend remains)
+## Phase 03 — Intelligent Routing  ✅
 
 | Item | Status | Where |
 |---|---|---|
 | File Processing adapter (sandboxed root, traversal/symlink protection, size cap) | ✅ | `tools/file_processing.py` |
 | Python Execution adapter (separate `python -I` process, timeout, no inherited env) | ✅ | `tools/python_exec.py` — not a security sandbox, see ARCHITECTURE §5 |
 | Web Search adapter + `SearchBackend` interface + static backend | ✅ | `tools/web_search.py` |
-| Live web search backend | ⛔ | blocked on decision: which search provider (ARCHITECTURE §6) |
+| Live web search backend | ✅ | `AnthropicSearchBackend` (Claude server-side web search), opt-in via `ORCH_SEARCH_BACKEND=anthropic`; tested with a fake client — no live search run yet |
 | `Planner` protocol, `ToolCatalog`, `RuleBasedPlanner` | ✅ | `routing/planner.py` |
 | `AnthropicPlanner` (Claude Opus 5.5, structured outputs, refusal fallbacks, error mapping) | ✅ | `routing/anthropic_planner.py` — tested with a fake client only; **no live API call made yet** |
 | `CapabilityRouter`: deterministic ranking, proposal re-verification, static input validation | ✅ | `routing/router.py` |

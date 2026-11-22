@@ -62,6 +62,8 @@ All settings are environment variables. Invalid values stop the server at startu
 | `ORCH_EXECUTION_DEADLINE_S` | unset | time limit for a whole plan; unfinished tasks are cancelled |
 | `ORCH_FILE_TOOL_ROOT` | `data/uploads` | the only folder the file tool can read |
 | `ORCH_PYTHON_EXEC_TIMEOUT_S` | `10` | Python snippets are killed after this |
+| `ORCH_SEARCH_BACKEND` | `none` | `none`: no web search tool. `anthropic`: Claude's server-side web search, using the planner's credentials (billed per search plus tokens) |
+| `ORCH_SEARCH_MAX_USES` | `3` | searches Claude may run for one web search call (1–10) |
 | `ORCH_LLM_PROVIDER` | `anthropic` | `anthropic` (Claude) or `rule_based` (offline, deterministic) |
 | `ORCH_LLM_MODEL` | `claude-opus-5-5` | Claude model ID |
 | `ORCH_LLM_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` |

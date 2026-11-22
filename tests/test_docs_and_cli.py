@@ -102,7 +102,16 @@ def test_check_config_with_example_files():
                         principals_path=ROOT / "config/principals.example.json", llm_provider="rule_based")
     errors, warnings = check_config(settings, environ={})
     assert not errors
-    assert warnings == ["principals file still contains the example placeholder hashes."]
+    assert warnings[0] == "principals file still contains the example placeholder hashes."
+    assert warnings[1].startswith("ORCH_SEARCH_BACKEND is 'none'") and len(warnings) == 2
+
+
+def test_check_config_search_backend_without_key():
+    _, warnings = check_config(Settings(llm_provider="rule_based", search_backend="anthropic"), environ={})
+    assert any("search backend is 'anthropic'" in w for w in warnings)
+    _, warnings = check_config(Settings(llm_provider="rule_based", search_backend="anthropic"),
+                               environ={"ANTHROPIC_API_KEY": "x"})
+    assert not any("search" in w.lower() for w in warnings)
 
 
 def test_check_config_reports_broken_files(tmp_path):

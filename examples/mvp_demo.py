@@ -1,11 +1,13 @@
 """The spec's MVP demonstration, run in-process.
 
-    python examples/mvp_demo.py                      # offline: rule-based planner
-    python examples/mvp_demo.py --planner anthropic  # Claude plans it (needs ANTHROPIC_API_KEY)
+    python examples/mvp_demo.py                                         # offline
+    python examples/mvp_demo.py --planner anthropic                     # Claude plans it
+    python examples/mvp_demo.py --planner anthropic --search anthropic  # ...and searches the web
 
 Reads examples/data/sales.csv, averages the Revenue column with the Python tool and, independently,
-runs a web search. There is no live search backend yet, so the search tool serves two clearly
-labelled SAMPLE results; replace StaticSearchBackend with a real SearchBackend to search the web.
+runs a web search. By default the search tool serves two clearly labelled SAMPLE results; with
+``--search anthropic`` it runs real searches through Claude. Both Claude options need
+ANTHROPIC_API_KEY and cost a small amount of API usage per run.
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ GRANTS = [
 ]
 
 
-async def run(planner_name: str) -> int:
+async def run(planner_name: str, search: str = "sample") -> int:
     uploads = Path(tempfile.mkdtemp(prefix="orch_demo_"))
     try:
         shutil.copy(DATA / "sales.csv", uploads / "sales.csv")
@@ -54,7 +56,12 @@ async def run(planner_name: str) -> int:
         registry = ToolRegistry(audit)
         await registry.register(FileProcessingTool(uploads))
         await registry.register(PythonExecTool())
-        await registry.register(WebSearchTool(StaticSearchBackend(SAMPLE_RESULTS)))
+        if search == "anthropic":
+            from orchestrator.tools.anthropic_search import AnthropicSearchBackend
+
+            await registry.register(WebSearchTool(AnthropicSearchBackend()))
+        else:
+            await registry.register(WebSearchTool(StaticSearchBackend(SAMPLE_RESULTS)))
 
         settings = Settings(llm_provider=planner_name)
         planner = RuleBasedPlanner() if planner_name == "rule_based" else build_planner(settings, audit)
@@ -83,8 +90,9 @@ async def run(planner_name: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--planner", choices=["rule_based", "anthropic"], default="rule_based")
+    parser.add_argument("--search", choices=["sample", "anthropic"], default="sample")
     args = parser.parse_args(argv)
-    return asyncio.run(run(args.planner))
+    return asyncio.run(run(args.planner, args.search))
 
 
 if __name__ == "__main__":
