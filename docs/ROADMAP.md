@@ -16,8 +16,8 @@ Remaining before a production rollout:
 
 | Item | State | Needs |
 |---|---|---|
-| Live run of the Claude planner | ⛔ | an Anthropic API key, then `python examples/mvp_demo.py --planner anthropic` |
-| Live web search run | ⛔ | built (`ORCH_SEARCH_BACKEND=anthropic`); needs an Anthropic API key, then `python examples/mvp_demo.py --planner anthropic --search anthropic` |
+| Live run of a real planner | ⛔ | any one of: Anthropic credits, a Gemini key (`--planner gemini --search gemini`), a Groq key (`--planner groq`), or a local Ollama (`--planner ollama`, no key) with `python examples/mvp_demo.py` |
+| Live web search run | ⛔ | built for both providers (`ORCH_SEARCH_BACKEND=anthropic` / `gemini`); needs a working key for either |
 | Persistent requests/approvals/idempotency (multi-instance) | ⬜ | a database + distributed lock, when one instance is no longer enough |
 | Stronger Python isolation | ⬜ | container execution, if untrusted users get `python_exec` |
 | File upload endpoint, LLM-written summaries, OpenTelemetry export | ⬜ | optional extensions (spec §11) |
@@ -58,6 +58,8 @@ Remaining before a production rollout:
 | Live web search backend | ✅ | `AnthropicSearchBackend` (Claude server-side web search), opt-in via `ORCH_SEARCH_BACKEND=anthropic`; tested with a fake client — no live search run yet |
 | `Planner` protocol, `ToolCatalog`, `RuleBasedPlanner` | ✅ | `routing/planner.py` |
 | `AnthropicPlanner` (Claude Opus 5.5, structured outputs, refusal fallbacks, error mapping) | ✅ | `routing/anthropic_planner.py` — tested with a fake client only; **no live API call made yet** |
+| `GeminiPlanner` + `GeminiSearchBackend` (Google Gemini as alternative provider; shared prompt/schema/parser) | ✅ | `routing/gemini_planner.py`, `tools/gemini_search.py`; tested with a fake client only, **no live Gemini call made yet** |
+| Groq and Ollama planners (`OpenAICompatPlanner`; Llama models via either) | ✅ | `routing/openai_compat_planner.py`; tested with a fake client only, **no live Groq or Ollama call made yet** |
 | `CapabilityRouter`: deterministic ranking, proposal re-verification, static input validation | ✅ | `routing/router.py` |
 | "No matching tool" handling, incl. partial routing | ✅ | `NoMatchingToolError`, `allow_partial` |
 | Permission-aware candidate filtering | ✅ | wired in Phase 04 |

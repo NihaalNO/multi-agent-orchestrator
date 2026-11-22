@@ -30,7 +30,9 @@ python -m venv .venv
 .\.venv\Scripts\python -m orchestrator serve --host 127.0.0.1 --port 8000
 ```
 
-`requirements.lock` pins every runtime dependency; installing from it reproduces the tested set.
+`requirements.lock` pins every runtime dependency, including the optional provider SDKs (Gemini,
+and `openai` for Groq/Ollama); installing from it reproduces the tested set. A plain
+`pip install .` supports Anthropic only; add `".[gemini]"` and/or `".[openai-compat]"` for the others.
 
 ## Command line
 
@@ -43,7 +45,9 @@ python -m venv .venv
 
 `check-config` warns about the common mistakes: no principals (nobody can log in), no grants
 (everything denied), no admin or approver, example placeholder hashes still present, and a Claude
-planner without credentials.
+planner without credentials. A Gemini planner or search backend without `GEMINI_API_KEY` (or
+`GOOGLE_API_KEY`) is an **error**, not a warning: unlike `ant auth login` for Claude, Google's SDK
+has no sign-in fallback, so the server would not start.
 
 ## Configuration
 
@@ -62,12 +66,15 @@ All settings are environment variables. Invalid values stop the server at startu
 | `ORCH_EXECUTION_DEADLINE_S` | unset | time limit for a whole plan; unfinished tasks are cancelled |
 | `ORCH_FILE_TOOL_ROOT` | `data/uploads` | the only folder the file tool can read |
 | `ORCH_PYTHON_EXEC_TIMEOUT_S` | `10` | Python snippets are killed after this |
-| `ORCH_SEARCH_BACKEND` | `none` | `none`: no web search tool. `anthropic`: Claude's server-side web search, using the planner's credentials (billed per search plus tokens) |
-| `ORCH_SEARCH_MAX_USES` | `3` | searches Claude may run for one web search call (1–10) |
-| `ORCH_LLM_PROVIDER` | `anthropic` | `anthropic` (Claude) or `rule_based` (offline, deterministic) |
-| `ORCH_LLM_MODEL` | `claude-opus-5-5` | Claude model ID |
-| `ORCH_LLM_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` |
-| `ORCH_LLM_API_KEY` | unset | overrides the SDK's own lookup (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ant auth login`) |
+| `ORCH_SEARCH_BACKEND` | `none` | `none`: no web search tool. `anthropic`: Claude's server-side web search. `gemini`: Gemini with Google Search grounding. Both are billed per search by the provider |
+| `ORCH_SEARCH_MODEL` | provider default | model used for web search (`claude-opus-5-5` / `gemini-3.8-flash`) |
+| `ORCH_SEARCH_MAX_USES` | `3` | searches Claude may run for one web search call (1–10; Anthropic only) |
+| `ORCH_LLM_PROVIDER` | `anthropic` | `anthropic` (Claude), `gemini` (Google Gemini), `groq`, `ollama` or `rule_based` (offline, deterministic) |
+| `ORCH_LLM_MODEL` | provider default | planner model: `claude-opus-5-5` (Anthropic), `gemini-3.8-flash` (Gemini), `openai/gpt-oss-20b` (Groq), `gpt-oss:20b` (Ollama). Llama: `llama-3.3-70b-versatile` on Groq, `llama3.3` on Ollama |
+| `ORCH_LLM_BASE_URL` | provider default | Groq/Ollama endpoint override, e.g. `http://gpu-box:11434/v1` for a remote Ollama or `https://ollama.com/v1` for Ollama's cloud |
+| `ORCH_LLM_JSON_MODE` | `auto` | Groq/Ollama output mode. `auto`: schema-enforced output where the provider supports it for the model (Groq: gpt-oss and a few others; local Ollama: any model), otherwise JSON mode with the schema in the instructions. `json_schema` / `json_object` force one |
+| `ORCH_LLM_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` (Anthropic only) |
+| `ORCH_LLM_API_KEY` | unset | key for the planner's provider (and web search when it uses the same provider). Otherwise each SDK reads its own: `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ant auth login`, or `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Google's SDK prefers `GOOGLE_API_KEY` if both are set), `GROQ_API_KEY`, `OLLAMA_API_KEY` (Ollama's cloud only) |
 | `ORCH_POLICY_PATH` | unset | grants file; unset → everything denied |
 | `ORCH_PRINCIPALS_PATH` | unset | API-key principals; unset → nobody authenticates |
 | `ORCH_ADMIN_ROLE` | `admin` | role name for administration |

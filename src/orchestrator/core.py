@@ -147,9 +147,18 @@ async def register_default_tools(
 
         from orchestrator.tools.anthropic_search import AnthropicSearchBackend
 
-        key = settings.llm_api_key.get_secret_value() if settings.llm_api_key else None
+        key = settings.api_key_for("anthropic")
         client = anthropic.AsyncAnthropic(api_key=key) if key else anthropic.AsyncAnthropic()
-        search_backend = AnthropicSearchBackend(client, model=settings.llm_model, max_uses=settings.search_max_uses)
+        search_backend = AnthropicSearchBackend(
+            client, model=settings.effective_search_model, max_uses=settings.search_max_uses
+        )
+    elif search_backend is None and settings.search_backend == "gemini":
+        from orchestrator.routing.gemini_planner import make_gemini_client
+        from orchestrator.tools.gemini_search import GeminiSearchBackend
+
+        search_backend = GeminiSearchBackend(
+            make_gemini_client(settings.api_key_for("gemini")), model=settings.effective_search_model
+        )
     if search_backend is not None:
         await registry.register(WebSearchTool(search_backend), replace_existing=True)
 

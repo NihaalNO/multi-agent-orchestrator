@@ -36,16 +36,24 @@ class Settings(BaseModel):
     # Tools
     file_tool_root: Path = Path("data/uploads")
     python_exec_timeout_s: float = Field(default=10.0, gt=0, le=120)
-    # "none": no web search tool is registered. "anthropic": Claude's server-side web search,
-    # using the same credentials as the planner (billed per search on top of tokens).
-    search_backend: Literal["none", "anthropic"] = "none"
+    # "none": no web search tool is registered. "anthropic": Claude's server-side web search.
+    # "gemini": Gemini with Google Search grounding. Both are billed per search by their provider.
+    search_backend: Literal["none", "anthropic", "gemini"] = "none"
+    search_model: str | None = Field(default=None, description="Model for web search; unset → provider default.")
     search_max_uses: int = Field(default=3, ge=1, le=10, description="Web searches Claude may run per call.")
 
-    # Planner. "anthropic" uses Claude; "rule_based" is the deterministic offline planner.
+    # Planner: "anthropic" (Claude), "gemini" (Google Gemini), "groq", "ollama" or "rule_based"
+    # (offline, deterministic).
     llm_provider: str = "anthropic"
-    llm_model: str = "claude-opus-5-5"
-    llm_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
-    # Optional: if unset, the Anthropic SDK resolves ANTHROPIC_API_KEY / auth profiles itself.
+    llm_model: str | None = Field(default=None, description="Planner model; unset → provider default.")
+    llm_base_url: str | None = Field(default=None, description="Groq/Ollama endpoint override, e.g. a remote Ollama.")
+    llm_json_mode: Literal["auto", "json_schema", "json_object"] = Field(
+        default="auto", description="Groq/Ollama structured-output mode; auto picks per provider and model."
+    )
+    llm_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"  # Anthropic only
+    # Optional. For the planner's provider (and web search, when it uses the same provider).
+    # If unset, each SDK reads its own variables: ANTHROPIC_API_KEY / `ant auth login`, or
+    # GEMINI_API_KEY / GOOGLE_API_KEY.
     llm_api_key: SecretStr | None = None
 
     # Permissions. Unset policy → no grants → everything denied (default deny).
@@ -76,3 +84,26 @@ class Settings(BaseModel):
                 "Invalid orchestrator configuration",
                 details={"errors": exc.errors(include_url=False, include_input=False)},
             ) from exc
+
+    @property
+    def planner_model(self) -> str | None:
+        return self.llm_model or DEFAULT_MODELS.get(self.llm_provider.lower())
+
+    @property
+    def effective_search_model(self) -> str | None:
+        return self.search_model or DEFAULT_MODELS.get(self.search_backend)
+
+    def api_key_for(self, provider: str) -> str | None:
+        """``llm_api_key`` belongs to the planner's provider; other providers use their SDK's env vars."""
+        if self.llm_api_key and provider == self.llm_provider.lower():
+            return self.llm_api_key.get_secret_value()
+        return None
+
+
+# Default model per provider when ORCH_LLM_MODEL / ORCH_SEARCH_MODEL are unset.
+DEFAULT_MODELS = {
+    "anthropic": "claude-opus-5-5",
+    "gemini": "gemini-3.8-flash",
+    "groq": "openai/gpt-oss-20b",
+    "ollama": "gpt-oss:20b",
+}

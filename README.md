@@ -27,26 +27,38 @@ This runs the spec's MVP request (read a CSV, average its revenue with Python, s
 benchmarks) through the whole pipeline and prints the summary. `examples/custom_tool.py` adds a tool
 at runtime; `examples/approval_workflow.py` walks through a sensitive operation's approval. With an
 Anthropic API key set, `examples\mvp_demo.py --planner anthropic --search anthropic` lets Claude do
-the planning and run real web searches.
+the planning and run real web searches; with a Gemini key, `--planner gemini --search gemini` does
+the same with Google Gemini.
 
 ## Status
 
 All eight phases are complete, all ten essential test scenarios from the spec pass, and CI (tests
 on Linux and Windows, plus the Docker image) is green. Live web search is available through Claude
-(`ORCH_SEARCH_BACKEND=anthropic`). Before a production rollout: a first live run of the Claude
-planner and the search backend, which needs an Anthropic API key. See the roadmap's overall status.
+or Gemini (`ORCH_SEARCH_BACKEND=anthropic` / `gemini`). Before a production rollout: a first live
+run of the planner and search backend with either provider. See the roadmap's overall status.
 
 ## Planner configuration
 
-The planner uses Claude (`claude-opus-5-5`) through the official `anthropic` SDK. Credentials
-are resolved by the SDK (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login`
-profile); `ORCH_LLM_API_KEY` overrides them.
+Four LLM providers are supported, plus an offline planner. Every provider gets the same prompt,
+the same output schema and the same checks on what it returns.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `ORCH_LLM_PROVIDER` | `anthropic` | `anthropic` or `rule_based` (offline, deterministic) |
-| `ORCH_LLM_MODEL` | `claude-opus-5-5` | Claude model ID |
-| `ORCH_LLM_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` |
+| Provider | `ORCH_LLM_PROVIDER` | Default model | Credentials |
+|---|---|---|---|
+| Anthropic (default) | `anthropic` | `claude-opus-5-5` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `ant auth login` |
+| Google Gemini | `gemini` | `gemini-3.8-flash` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`); install with `pip install -e ".[gemini]"` |
+| Groq | `groq` | `openai/gpt-oss-20b` | `GROQ_API_KEY`; install with `pip install -e ".[openai-compat]"` |
+| Ollama (local) | `ollama` | `gpt-oss:20b` | none locally (`OLLAMA_API_KEY` for Ollama's cloud); needs a running Ollama server and `ollama pull <model>`; same extra as Groq |
+| Offline | `rule_based` | — | none |
+
+**Llama models** run through Groq or Ollama: `ORCH_LLM_MODEL=llama-3.3-70b-versatile` (Groq) or
+`ORCH_LLM_MODEL=llama3.3` (Ollama). Meta's own API now serves Meta's Muse models, not Llama, so it
+is not a provider here. On Groq, Llama models only support JSON mode (not schema-enforced output),
+so they are given the schema in their instructions and may produce plans that fail validation more
+often; the default `openai/gpt-oss-20b` has strict schema output.
+
+`ORCH_LLM_MODEL` overrides the default model, `ORCH_LLM_API_KEY` overrides the SDK's own key
+lookup, and `ORCH_LLM_EFFORT` (`low` … `max`) applies to Claude only. Web search can use either
+provider too (`ORCH_SEARCH_BACKEND`); see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Setup
 

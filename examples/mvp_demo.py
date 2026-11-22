@@ -3,11 +3,15 @@
     python examples/mvp_demo.py                                         # offline
     python examples/mvp_demo.py --planner anthropic                     # Claude plans it
     python examples/mvp_demo.py --planner anthropic --search anthropic  # ...and searches the web
+    python examples/mvp_demo.py --planner gemini --search gemini        # same with Google Gemini
+    python examples/mvp_demo.py --planner groq                          # Groq (GROQ_API_KEY)
+    python examples/mvp_demo.py --planner ollama                        # local Ollama, no key
 
 Reads examples/data/sales.csv, averages the Revenue column with the Python tool and, independently,
 runs a web search. By default the search tool serves two clearly labelled SAMPLE results; with
-``--search anthropic`` it runs real searches through Claude. Both Claude options need
-ANTHROPIC_API_KEY and cost a small amount of API usage per run.
+``--search anthropic`` / ``--search gemini`` it runs real searches. Claude options need an
+Anthropic key or `ant auth login`; Gemini options need GEMINI_API_KEY and the gemini extra
+(``pip install -e ".[gemini]"``). Live runs cost a small amount of API usage.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from pathlib import Path
 from orchestrator.config import Settings
 from orchestrator.contracts import AccessLevel, PermissionGrant, Principal
 from orchestrator.core import Orchestrator
+from orchestrator.errors import ConfigurationError
 from orchestrator.observability import AuditLog, MetricsSink
 from orchestrator.permissions import ApprovalManager, GrantPolicy, PermissionManager
 from orchestrator.registry import ToolRegistry
@@ -47,7 +52,7 @@ GRANTS = [
 ]
 
 
-async def run(planner_name: str, search: str = "sample") -> int:
+async def run(planner_name: str, search: str = "sample", model: str | None = None) -> int:
     uploads = Path(tempfile.mkdtemp(prefix="orch_demo_"))
     try:
         shutil.copy(DATA / "sales.csv", uploads / "sales.csv")
@@ -60,10 +65,14 @@ async def run(planner_name: str, search: str = "sample") -> int:
             from orchestrator.tools.anthropic_search import AnthropicSearchBackend
 
             await registry.register(WebSearchTool(AnthropicSearchBackend()))
+        elif search == "gemini":
+            from orchestrator.tools.gemini_search import GeminiSearchBackend
+
+            await registry.register(WebSearchTool(GeminiSearchBackend()))
         else:
             await registry.register(WebSearchTool(StaticSearchBackend(SAMPLE_RESULTS)))
 
-        settings = Settings(llm_provider=planner_name)
+        settings = Settings(llm_provider=planner_name, llm_model=model)
         planner = RuleBasedPlanner() if planner_name == "rule_based" else build_planner(settings, audit)
         permissions = PermissionManager(GrantPolicy(GRANTS), registry, audit)
         orch = Orchestrator(registry, planner, permissions, ApprovalManager(audit), audit, settings=settings)
@@ -89,10 +98,16 @@ async def run(planner_name: str, search: str = "sample") -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--planner", choices=["rule_based", "anthropic"], default="rule_based")
-    parser.add_argument("--search", choices=["sample", "anthropic"], default="sample")
+    parser.add_argument("--planner", choices=["rule_based", "anthropic", "gemini", "groq", "ollama"],
+                        default="rule_based")
+    parser.add_argument("--model", help="override the planner's default model, e.g. llama-3.3-70b-versatile")
+    parser.add_argument("--search", choices=["sample", "anthropic", "gemini"], default="sample")
     args = parser.parse_args(argv)
-    return asyncio.run(run(args.planner, args.search))
+    try:
+        return asyncio.run(run(args.planner, args.search, args.model))
+    except ConfigurationError as exc:  # e.g. missing API key: one clear line, not a traceback
+        print(f"Configuration error: {exc.message}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

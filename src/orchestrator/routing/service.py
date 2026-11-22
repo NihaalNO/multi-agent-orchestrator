@@ -18,16 +18,30 @@ def build_planner(settings: Settings, audit: AuditLog | None = None) -> Planner:
     provider = (settings.llm_provider or "").lower()
     if provider == "rule_based":
         return RuleBasedPlanner()
+    key = settings.api_key_for(provider)
     if provider == "anthropic":
         import anthropic
 
         from orchestrator.routing.anthropic_planner import AnthropicPlanner
 
-        key = settings.llm_api_key.get_secret_value() if settings.llm_api_key else None
         client = anthropic.AsyncAnthropic(api_key=key) if key else anthropic.AsyncAnthropic()
-        return AnthropicPlanner(client, model=settings.llm_model, effort=settings.llm_effort, audit=audit)
+        return AnthropicPlanner(client, model=settings.planner_model, effort=settings.llm_effort, audit=audit)
+    if provider == "gemini":
+        from orchestrator.routing.gemini_planner import GeminiPlanner, make_gemini_client
+
+        return GeminiPlanner(make_gemini_client(key), model=settings.planner_model, audit=audit)
+    from orchestrator.routing.openai_compat_planner import PROVIDERS, OpenAICompatPlanner, make_openai_compat_client
+
+    if provider in PROVIDERS:
+        profile = PROVIDERS[provider]
+        client = make_openai_compat_client(profile, api_key=key, base_url=settings.llm_base_url)
+        return OpenAICompatPlanner(
+            profile, client, model=settings.planner_model, base_url=settings.llm_base_url,
+            json_mode=None if settings.llm_json_mode == "auto" else settings.llm_json_mode, audit=audit,
+        )
     raise ConfigurationError(
-        f"unknown llm_provider {settings.llm_provider!r}; expected 'anthropic' or 'rule_based'"
+        f"unknown llm_provider {settings.llm_provider!r}; expected one of "
+        "'anthropic', 'gemini', 'groq', 'ollama', 'rule_based'"
     )
 
 

@@ -97,13 +97,51 @@ def check_config(settings: Settings, environ: dict[str, str] | None = None) -> t
         except ConfigurationError as exc:
             errors.append(f"policy: {exc.message}")
 
-    has_key = bool(settings.llm_api_key or env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN"))
-    if settings.llm_provider == "anthropic" and not has_key:
+    def has_key(provider: str) -> bool:
+        if settings.api_key_for(provider):
+            return True
+        if provider == "anthropic":
+            return bool(env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN"))
+        if provider == "gemini":
+            return bool(env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY"))
+        return True
+
+    planner = settings.llm_provider.lower()
+    from orchestrator.routing.openai_compat_planner import PROVIDERS as COMPAT
+
+    if planner not in ("anthropic", "gemini", "rule_based", *COMPAT):
+        errors.append(f"unknown ORCH_LLM_PROVIDER {settings.llm_provider!r} "
+                      f"(anthropic, gemini, {', '.join(COMPAT)} or rule_based)")
+    if planner in COMPAT:
+        profile = COMPAT[planner]
+        try:
+            import openai  # noqa: F401
+        except ImportError:
+            errors.append(f"planner is {planner!r} but the openai package is not installed: "
+                          "pip install 'multi-tool-orchestrator[openai-compat]'")
+        if profile.key_required and not profile.api_key(settings.api_key_for(planner), env):
+            errors.append(f"planner is {planner!r} but no key is set: set {' or '.join(profile.key_env)}")
+        if planner == "ollama":
+            url = settings.llm_base_url or profile.base_url
+            warnings.append(f"planner is 'ollama': make sure an Ollama server is reachable at {url} and the model "
+                            f"is pulled (`ollama pull {settings.planner_model}`); this check does not contact it.")
+    if planner == "anthropic" and not has_key("anthropic"):
         warnings.append("planner is 'anthropic' but no API key is set in the environment; the SDK may still find an "
                         "`ant auth login` profile, otherwise planning will fail (requests are rejected, not run).")
-    if settings.search_backend == "anthropic" and not has_key:
+    if settings.search_backend == "anthropic" and not has_key("anthropic"):
         warnings.append("search backend is 'anthropic' but no API key is set in the environment; searches will fail "
                         "unless the SDK finds an `ant auth login` profile.")
+    # Gemini has no sign-in fallback: without a key its client cannot even be created.
+    gemini_uses = [use for use, on in (("planner", planner == "gemini"), ("search backend", settings.search_backend == "gemini")) if on]
+    if gemini_uses:
+        try:
+            import google.genai  # noqa: F401
+        except ImportError:
+            errors.append(f"{' and '.join(gemini_uses)} use Gemini but google-genai is not installed: "
+                          "pip install 'multi-tool-orchestrator[gemini]'")
+        if not has_key("gemini"):
+            errors.append(f"{' and '.join(gemini_uses)} use Gemini but no key is set: "
+                          "set GEMINI_API_KEY (or GOOGLE_API_KEY)")
     if settings.search_backend == "none":
         warnings.append("ORCH_SEARCH_BACKEND is 'none': no web search tool is registered, so requests that need "
                         "web search are only partly answered (or rejected).")
@@ -117,7 +155,8 @@ def cmd_check_config(args: argparse.Namespace) -> int:
         print(f"ERROR settings: {exc.message}: {exc.details.get('errors')}")
         return 1
     errors, warnings = check_config(settings)
-    print(f"environment={settings.environment} planner={settings.llm_provider} model={settings.llm_model} "
+    print(f"environment={settings.environment} planner={settings.llm_provider} model={settings.planner_model} "
+          f"search={settings.search_backend}{'/' + settings.effective_search_model if settings.effective_search_model else ''} "
           f"uploads={settings.file_tool_root}")
     for e in errors:
         print(f"ERROR   {e}")

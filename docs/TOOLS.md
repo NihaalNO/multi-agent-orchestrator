@@ -132,11 +132,18 @@ grant access in the policy file — registering a tool authorizes no one:
 ## Search backends
 
 The web search tool delegates to a `SearchBackend` (`name`, `async search(query, max_results)`,
-`async health_check()`). Two ship with the project: `StaticSearchBackend` (fixed results for tests
-and demos) and `AnthropicSearchBackend` (Claude's server-side web search; enable it with
-`ORCH_SEARCH_BACKEND=anthropic`). Its result titles, URLs and dates come only from the API's
-structured search results and its snippets only from citations quoted from those pages, so the
-model cannot invent a source. To use another provider, implement the three members and pass the
+`async health_check()`). Three ship with the project:
+
+| Backend | Enable with | Sources from | Snippet is | Dates |
+|---|---|---|---|---|
+| `StaticSearchBackend` | code only | fixed list | as given | as given |
+| `AnthropicSearchBackend` | `ORCH_SEARCH_BACKEND=anthropic` | the API's structured search results | text **quoted from the page** (citation) | when the page has one |
+| `GeminiSearchBackend` | `ORCH_SEARCH_BACKEND=gemini` | Google's grounding citations on the answer | the **model's sentence** Google attributes to that source: a summary, not a quote | none |
+
+In both live backends the URLs and titles are API metadata, never text the model wrote, so a
+source cannot be invented. Gemini URLs may be Google redirect links, and Google's terms set
+display requirements for grounded results (search suggestions) that you should review before
+showing them to end users. To use another provider, implement the three members and pass the
 backend to `register_default_tools(..., search_backend=...)`.
 
 ## 6. Test it
