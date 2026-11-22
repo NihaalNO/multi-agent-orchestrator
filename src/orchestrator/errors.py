@@ -97,6 +97,12 @@ class NoMatchingToolError(PlanError):
     code = "no_matching_tool"
 
 
+class InputResolutionError(PlanError):
+    """A ``$ref`` could not be resolved against an upstream task's output."""
+
+    code = "input_resolution_error"
+
+
 class PlannerUnavailableError(PlanError):
     """The planning backend (e.g. the LLM API) is temporarily unreachable or rate-limited."""
 

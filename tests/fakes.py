@@ -147,3 +147,88 @@ class RecordsTool(ToolAdapter):
     async def op_delete(self, args, ctx):
         self.data.pop(args["id"], None)
         return {"ok": True}
+
+
+# --- Execution test tool ------------------------------------------------------------------------
+
+import time as _time  # noqa: E402
+
+from orchestrator.errors import ToolExecutionError, TransientToolError  # noqa: E402
+
+ANY_OBJ = {"type": "object"}
+
+
+def worker_spec(tool_id="worker", *, timeout_s=2.0, max_retries=2, max_concurrency=8):
+    return ToolSpec(
+        tool_id=tool_id,
+        name="Worker",
+        description="Configurable test worker",
+        constraints=ExecutionConstraints(timeout_s=timeout_s, max_retries=max_retries, max_concurrency=max_concurrency),
+        operations=(
+            OperationSpec(name="work", description="Sleep then echo", capabilities=("test.work",),
+                          input_schema=ANY_OBJ, output_schema=ANY_OBJ, access=AccessLevel.READ),
+            OperationSpec(name="write", description="Non-idempotent write", capabilities=("test.write",),
+                          input_schema=ANY_OBJ, output_schema=ANY_OBJ, access=AccessLevel.WRITE, idempotent=False),
+            OperationSpec(name="bad_output", description="Violates output schema", capabilities=("test.bad",),
+                          input_schema=ANY_OBJ,
+                          output_schema={"type": "object", "required": ["needed"]}, access=AccessLevel.READ),
+        ),
+    )
+
+
+class WorkerTool(ToolAdapter):
+    """Args: label, delay (s), fail_transient (n first attempts), fail_hard, crash, key (resource)."""
+
+    spec = worker_spec()
+
+    def __init__(self, spec=None):
+        if spec is not None:
+            self.spec = spec
+        self.calls: list[tuple[str, int]] = []
+        self.events: list[tuple[str, str, float]] = []
+        self.active = 0
+        self.max_active = 0
+        self.active_by_resource: dict[str, int] = {}
+        self.max_by_resource: dict[str, int] = {}
+        self.cancelled: list[str] = []
+
+    def resource_for(self, operation, args):
+        key = args.get("key")
+        return f"res:{key}" if isinstance(key, str) else None
+
+    async def _run(self, op, args, ctx):
+        label = str(args.get("label", ctx.task_id))
+        self.calls.append((label, ctx.attempt))
+        res = self.resource_for(op, args)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        if res:
+            self.active_by_resource[res] = self.active_by_resource.get(res, 0) + 1
+            self.max_by_resource[res] = max(self.max_by_resource.get(res, 0), self.active_by_resource[res])
+        self.events.append(("start", label, _time.monotonic()))
+        try:
+            if ctx.attempt <= args.get("fail_transient", 0):
+                raise TransientToolError(f"transient failure {ctx.attempt}")
+            if args.get("fail_hard"):
+                raise ToolExecutionError("hard failure")
+            if args.get("crash"):
+                raise RuntimeError("adapter bug")
+            await asyncio.sleep(args.get("delay", 0))
+            return {"label": label, "echo": args.get("echo"), "attempt": ctx.attempt}
+        except asyncio.CancelledError:
+            self.cancelled.append(label)
+            raise
+        finally:
+            self.active -= 1
+            if res:
+                self.active_by_resource[res] -= 1
+            self.events.append(("end", label, _time.monotonic()))
+
+    async def op_work(self, args, ctx):
+        return await self._run("work", args, ctx)
+
+    async def op_write(self, args, ctx):
+        return await self._run("write", args, ctx)
+
+    async def op_bad_output(self, args, ctx):
+        return {"wrong": True}

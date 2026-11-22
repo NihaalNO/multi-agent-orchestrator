@@ -54,6 +54,9 @@ class TaskResult(BaseModel):
     attempts: int = 0
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    approval_id: str | None = Field(default=None, description="Set when the task awaits or used an approval.")
+    deduplicated: bool = Field(default=False, description="Result reused from an earlier identical call.")
+    resource: str | None = None
 
     @property
     def duration_ms(self) -> float | None:

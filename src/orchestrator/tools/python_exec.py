@@ -134,6 +134,12 @@ class PythonExecTool(ToolAdapter):
             )
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(payload), self._timeout)
+            except asyncio.CancelledError:
+                # Engine timeout or execution cancelled: never leave the child running.
+                if proc.returncode is None:
+                    proc.kill()
+                    await asyncio.shield(proc.wait())
+                raise
             except TimeoutError:
                 proc.kill()
                 await proc.wait()

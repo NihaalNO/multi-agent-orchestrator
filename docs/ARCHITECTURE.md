@@ -197,9 +197,9 @@ infinite or pointless retry loops (spec §6.1).
 | 2 Intent analysis, 3 Decomposition | `Planner.plan()` (LLM or rule-based) |
 | 4 Capability discovery, 5 Tool selection | `CapabilityRouter.route()` (via `RoutingService.plan_and_route()`) |
 | 6 Permission validation | `PermissionPolicy.check()` at plan time **and** before each invoke |
-| 7 Execution planning | `ExecutionPlan.layers()` |
-| 8 Tool execution | `DagScheduler` → `ExecutionEngine.run_task()` |
-| 9 Result validation | engine output-schema check |
+| 7 Execution planning | `ExecutionPlan` dependency graph (`layers()` for inspection; the scheduler uses a ready queue) |
+| 8 Tool execution | `DagScheduler.execute()` → `ExecutionEngine.run_task()` |
+| 9 Result validation | engine output-schema check; failures and their skipped dependents are reported per task |
 | 10 Conflict resolution | `ConflictResolver.resolve()` |
 | 11 Aggregation, 12 Response | `Orchestrator` builds `ExecutionReport` (+ optional LLM summary) |
 
@@ -220,7 +220,12 @@ infinite or pointless retry loops (spec §6.1).
 | API auth | Hashed API keys mapped to principals (`ORCH_PRINCIPALS_PATH`); `admin` / `approver` roles | Simple, deterministic and default-deny (no principals → nobody authenticates). JWT/OAuth can replace `ApiKeyAuthenticator` later without touching policy code. |
 | Policy storage | JSON grant file (`ORCH_POLICY_PATH`), loaded at startup | Reviewable in version control; no database needed yet. No file → no grants → everything denied. |
 | Approval storage | In-memory `ApprovalManager` | Spec §4 (no premature infrastructure). Consequence: approvals do not survive a restart. |
-| Python sandbox | Separate subprocess (`python -I`), timeout, temp working dir, no inherited env | Honest limitation: a subprocess is **not** a security sandbox. Container isolation (Docker) is the planned upgrade; the `isolation` field already models it. |
+| Python sandbox | Separate subprocess (`python -I`), timeout, temp working dir, no inherited env; killed on cancellation | Honest limitation: a subprocess is **not** a security sandbox. Container isolation (Docker) is the planned upgrade; the `isolation` field already models it. |
+| Scheduling strategy | Ready queue: a task starts when its own dependencies succeed | Layer-by-layer execution would make every task wait for the slowest task of the previous layer. |
+| Retry safety | Non-idempotent operations retry only on `TransientToolError`, never after a timeout | After a timeout the write may already have happened; retrying could apply it twice. |
+| Duplicate protection | Idempotency key (per request) → non-idempotent calls run once per (user, key, tool, op, args) for the TTL; only successes are cached | Covers client double-submits and concurrent duplicates. Two identical non-idempotent calls inside one plan under one key also run once — the conservative choice. |
+| Write coordination | In-process per-resource `asyncio` locks | Enough for a single process. Multiple orchestrator processes would need a distributed lock (Redis), deferred per spec §4. |
+| Approval timing | Approvals are requested and consumed at execution time, with resolved arguments | The approved digest must match the exact arguments, which may depend on upstream outputs unknown at plan time. |
 
 ---
 
@@ -230,8 +235,8 @@ infinite or pointless retry loops (spec §6.1).
 2. **Web search backend**: a keyed API (Tavily, Brave, SerpAPI), or Anthropic's server-side
    web search tool (same API key as the planner, billed per search)? Tests use the static
    backend regardless; adding one is a single `SearchBackend` class.
-3. **Python isolation strength** (Phase 05): is subprocess-level isolation acceptable for
-   the MVP, or is Docker available on the target machine?
+3. **Python isolation strength**: subprocess isolation is implemented. Is that acceptable for
+   the MVP, or should code run in Docker (needs Docker on the target machine)?
 
 ---
 
@@ -249,7 +254,8 @@ src/orchestrator/
   tools/…                   web_search, python_exec, file_processing  (Phase 03)
   routing/                  router + planners                         (Phase 03)
   permissions/              policy engine + approvals                 (Phase 04)
-  execution/                engine + DAG scheduler                    (Phase 05)
+  execution/                engine, DAG scheduler, $ref resolution,
+                            idempotency store, resource locks        (Phase 05)
   resolution/               conflict resolver                         (Phase 06)
   core.py                   Orchestrator facade                       (Phase 07)
   api/app.py                FastAPI application

@@ -62,14 +62,23 @@ spec §13.12. Update it in the same commit as the work it describes.
 | JWT / OAuth 2.0 | ⬜ | not needed for MVP; `ApiKeyAuthenticator` is the swap point |
 | Persistent approval store | ⬜ | in-memory for now (approvals are lost on restart) |
 
-## Phase 05 — Parallel Execution  ⬜
+## Phase 05 — Parallel Execution  ✅
 
-- ⬜ `ExecutionEngine.run_task`: input validation → authorize → invoke → output validation
-- ⬜ Timeouts, retry policy driven by `recoverable`, retry cap
-- ⬜ `DagScheduler`: layer-by-layer + ready-queue execution, global & per-tool concurrency limits
-- ⬜ `$ref` input resolution from upstream outputs
-- ⬜ Cancellation; downstream tasks of failed tasks marked `skipped`
-- ⬜ Idempotency keys for non-idempotent operations; per-resource write locks
+| Item | Status | Where |
+|---|---|---|
+| `ExecutionEngine.run_task`: availability → input schema → final permission check → approval → invoke → output schema | ✅ | `execution/engine.py` |
+| Final permission check with resolved arguments (settles provisional decisions) | ✅ | engine step 3 |
+| Approval enforcement: request on first run, consume (single use, exact args) on re-run | ✅ | engine step 5 |
+| Timeouts; retries only for `recoverable` errors, capped, exponential backoff + jitter | ✅ | `ExecutionEngine._attempts` |
+| Non-idempotent ops never retried after a timeout | ✅ | only `TransientToolError` retries them |
+| `DagScheduler`: ready-queue execution (not layer-by-layer) | ✅ | `execution/scheduler.py` |
+| Global and per-tool concurrency limits, shared across executions | ✅ | engine semaphores |
+| `$ref` resolution from upstream outputs (dict keys, list indices, deep-copied) | ✅ | `execution/refs.py` |
+| Partial failure: dependents `skipped`, independent branches continue | ✅ | scheduler |
+| Whole-plan deadline and caller cancellation, propagated into tools | ✅ | scheduler; Python tool kills its child process on cancel |
+| Idempotency keys for non-idempotent operations | ✅ | `IdempotencyStore` (in-memory, TTL) |
+| Per-resource write locks | ✅ | `ResourceLocks` |
+| Resuming an execution after approval without re-running other tasks | ⬜ | re-submitting re-runs idempotent tasks; non-idempotent ones dedupe via idempotency key. Execution state store arrives with the facade (Phase 07). |
 
 ## Phase 06 — Conflict Resolution  ⬜
 
@@ -95,12 +104,12 @@ spec §13.12. Update it in the same commit as the work it describes.
 | # | Scenario | Status |
 |---|---|---|
 | 1 | Register a new tool while running | ✅ `tests/test_registry.py`, `tests/test_api.py` |
-| 2 | Request requiring multiple tools | 🟡 planned + routed to 3 tools (`test_planners.py`); execution in Phase 05/07 |
+| 2 | Request requiring multiple tools | ✅ MVP request planned, routed, authorized and executed across 3 tools (`test_execution.py::test_mvp_request_end_to_end`); API endpoint in Phase 07 |
 | 3 | Request with no matching tool | ✅ `tests/test_router.py`, `tests/test_planners.py` |
 | 4 | Unauthorized write operation | ✅ `tests/test_permissions.py` (policy + routing) |
-| 5 | Three independent tasks concurrently | ⬜ Phase 05 |
-| 6 | Sequential dependencies | 🟡 ordering logic tested (`ExecutionPlan.layers`); execution in Phase 05 |
-| 7 | Tool timeout | 🟡 health-check timeout tested; execution timeout in Phase 05 |
+| 5 | Three independent tasks concurrently | ✅ `test_execution.py` (timing + observed concurrency) |
+| 6 | Sequential dependencies | ✅ `test_execution.py` (start order + `$ref` outputs) |
+| 7 | Tool timeout | ✅ `test_execution.py` (retried for idempotent ops, not for writes) |
 | 8 | Conflicting tool outputs | ⬜ Phase 06 |
-| 9 | Duplicate execution requests | ⬜ Phase 05 |
-| 10 | Partial execution failure | ⬜ Phase 05 |
+| 9 | Duplicate execution requests | ✅ `test_execution.py` (concurrent + later duplicates run once) |
+| 10 | Partial execution failure | ✅ `test_execution.py` (dependents skipped, others succeed) |

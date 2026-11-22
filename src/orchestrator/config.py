@@ -29,6 +29,10 @@ class Settings(BaseModel):
         default=3, ge=0, le=10, description="Hard ceiling applied over any tool's own retry setting."
     )
     health_check_timeout_s: float = Field(default=5.0, gt=0, le=60)
+    retry_base_delay_s: float = Field(default=0.2, ge=0, le=30)
+    retry_max_delay_s: float = Field(default=5.0, ge=0, le=300)
+    idempotency_ttl_s: int = Field(default=24 * 3600, ge=60)
+    execution_deadline_s: float | None = Field(default=None, gt=0, description="Whole-plan time limit.")
 
     # Tools
     file_tool_root: Path = Path("data/uploads")
