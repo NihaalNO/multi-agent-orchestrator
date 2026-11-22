@@ -10,9 +10,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Unprivileged user; /data holds uploads and the audit log, /config the policy and principals.
+# Unprivileged user; /data holds uploads, the audit log and durable state, /config the policy
+# and principals.
 RUN useradd --create-home --uid 10001 orch \
- && mkdir -p /data/uploads /data/audit /config \
+ && mkdir -p /data/uploads /data/audit /data/state /config \
  && chown -R orch:orch /data
 
 # Dependencies first (cached layer), then the package without re-resolving dependencies.
@@ -27,6 +28,7 @@ USER orch
 ENV ORCH_ENVIRONMENT=production \
     ORCH_FILE_TOOL_ROOT=/data/uploads \
     ORCH_AUDIT_LOG_PATH=/data/audit/audit.jsonl \
+    ORCH_STATE_PATH=/data/state/orchestrator.db \
     ORCH_POLICY_PATH=/config/policy.json \
     ORCH_PRINCIPALS_PATH=/config/principals.json
 

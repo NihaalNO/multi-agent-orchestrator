@@ -13,7 +13,8 @@
       outputs, then resolves and summarises again.
 
 Requests that cannot be planned, routed or authorized end ``rejected`` with a structured error;
-nothing is executed for them. Records are held in memory (``RequestStore``).
+nothing is executed for them. Records are held in a ``RequestStore``: in memory by default, or in
+SQLite when ``ORCH_STATE_PATH`` is set (``orchestrator.state``).
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from orchestrator.errors import (
     RequestNotFoundError,
 )
 from orchestrator.execution import DagScheduler, ExecutionEngine
+from orchestrator.execution.coordination import IdempotencyBackend
 from orchestrator.observability.audit import AuditLog
 from orchestrator.permissions import ApprovalManager, PermissionManager, PlanAuthorization
 from orchestrator.registry.registry import ToolRegistry
@@ -218,6 +220,7 @@ class Orchestrator:
         resolver: ConflictResolver | None = None,
         settings: Settings | None = None,
         store: RequestStore | None = None,
+        idempotency_backend: IdempotencyBackend | None = None,
     ) -> None:
         self.settings = settings or Settings()
         self.registry = registry
@@ -226,10 +229,12 @@ class Orchestrator:
         self.audit = audit or AuditLog()
         self.routing = RoutingService(registry, planner, permissions, self.audit)
         self.scheduler = scheduler or DagScheduler(
-            ExecutionEngine.from_settings(self.settings, registry, permissions, approvals, self.audit), self.audit
+            ExecutionEngine.from_settings(self.settings, registry, permissions, approvals, self.audit,
+                                          idempotency_backend=idempotency_backend),
+            self.audit,
         )
         self.resolver = resolver or ConflictResolver(registry, self.audit)
-        self.store = store or RequestStore()
+        self.store = store if store is not None else RequestStore()
 
     @classmethod
     def build(
@@ -241,8 +246,11 @@ class Orchestrator:
         audit: AuditLog | None = None,
         *,
         planner: Planner | None = None,
+        store: RequestStore | None = None,
+        idempotency_backend: IdempotencyBackend | None = None,
     ) -> "Orchestrator":
-        return cls(registry, planner or build_planner(settings, audit), permissions, approvals, audit, settings=settings)
+        return cls(registry, planner or build_planner(settings, audit), permissions, approvals, audit,
+                   settings=settings, store=store, idempotency_backend=idempotency_backend)
 
     # ------------------------------------------------------------------ queries
 

@@ -80,6 +80,7 @@ All settings are environment variables. Invalid values stop the server at startu
 | `ORCH_ADMIN_ROLE` | `admin` | role name for administration |
 | `ORCH_APPROVER_ROLE` | `approver` | role name for deciding approvals |
 | `ORCH_APPROVAL_TTL_S` | `3600` | approvals expire after this |
+| `ORCH_STATE_PATH` | unset (Docker: `/data/state/orchestrator.db`) | SQLite file for requests, approvals and duplicate protection, so they survive restarts. Unset → kept in memory and lost on restart |
 | `ORCH_AUDIT_LOG_PATH` | unset | append audit events as JSON lines to this file |
 | `ORCH_AUDIT_TO_LOG` | `false` | also write audit events to the application log (stdout) |
 | `ORCH_LOG_LEVEL` | `info` | `debug` / `info` / `warning` / `error` |
@@ -101,12 +102,32 @@ Metrics are in-memory and reset on restart. Exporting them to OpenTelemetry/Prom
 planned extension; the audit stream they are built from is already durable if
 `ORCH_AUDIT_LOG_PATH` is set.
 
+## Durable state and restarts
+
+With `ORCH_STATE_PATH` set (the Docker image sets it to `/data/state/orchestrator.db`), request
+records, approvals and duplicate-protection records are kept in a SQLite file, so a restart or
+redeploy keeps them:
+
+- **Pending approvals** stay pending and can still be approved, then resumed with
+  `POST /requests/{id}/resume`; finished tasks are reused, not re-run.
+- **Idempotency keys** keep working: re-sending a request with the same `Idempotency-Key` after a
+  restart returns the original request.
+- **Requests that were running** when the process stopped are marked `failed` with
+  `interrupted_by_restart` on the next start. They are **not** re-run automatically: a half-finished
+  request may already have had side effects. Re-submit them if appropriate.
+
+The file contains request text, tool outputs and approval previews: protect it like the audit log
+(it is created owner-only on Linux). Back it up by copying it while the service is stopped, or with
+`sqlite3 orchestrator.db ".backup backup.db"` while running. A database written by a newer version
+of the orchestrator is refused at startup rather than misread; `check-config` reports this too.
+Metrics and the per-resource write locks stay in memory: they reset on restart by design.
+
 ## Scaling
 
-Run **one instance**. Requests, approvals, idempotency records and write locks are held in memory,
-so a second replica would not see the first one's approvals or duplicates, and restarts lose
-in-flight requests and pending approvals. Scaling out needs a shared store for those (a database
-plus a distributed lock such as Redis) — deliberately deferred until it is needed.
+Run **one instance**. The SQLite file and the in-process locks around requests and writes are for
+a single process; a second replica must not share the file, and would not see the first one's
+in-flight calls. Scaling out needs a shared database plus a distributed lock (for example
+PostgreSQL and Redis), deliberately deferred until it is needed.
 
 ## Security checklist
 

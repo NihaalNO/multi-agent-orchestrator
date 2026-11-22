@@ -139,20 +139,37 @@ def create_app(
     if permissions is None:
         grants = load_grants(settings.policy_path) if settings.policy_path else []
         permissions = PermissionManager(GrantPolicy(grants), registry, audit)
+    # Durable state only when the app builds its own orchestrator; injected components keep theirs.
+    state = None
+    if settings.state_path and orchestrator is None:
+        from orchestrator.state import open_state
+
+        state = open_state(settings.state_path)
+        if state.recovered:
+            audit.record("state.recovered", interrupted_requests=state.recovered)
     if approvals is None:
         approvals = ApprovalManager(
-            audit, approver_role=settings.approver_role, ttl=timedelta(seconds=settings.approval_ttl_s)
+            audit, approver_role=settings.approver_role, ttl=timedelta(seconds=settings.approval_ttl_s),
+            store=state.approvals if state else None,
         )
 
     if orchestrator is None:
-        orchestrator = Orchestrator.build(settings, registry, permissions, approvals, audit)
+        orchestrator = Orchestrator.build(
+            settings, registry, permissions, approvals, audit,
+            store=state.requests if state else None,
+            idempotency_backend=state.idempotency if state else None,
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if register_defaults:
             await register_default_tools(registry, settings)
-        yield
-        await registry.aclose()
+        try:
+            yield
+        finally:
+            await registry.aclose()
+            if state is not None:
+                state.close()
 
     app = FastAPI(title="Multi-Tool Orchestrator", version=__version__, lifespan=lifespan)
     app.state.settings = settings

@@ -51,7 +51,7 @@ from orchestrator.errors import (
     ToolTimeoutError,
     TransientToolError,
 )
-from orchestrator.execution.coordination import IdempotencyStore, ResourceLocks
+from orchestrator.execution.coordination import IdempotencyBackend, IdempotencyStore, ResourceLocks
 from orchestrator.observability.audit import AuditLog
 from orchestrator.permissions.approvals import ApprovalManager, args_digest
 from orchestrator.permissions.manager import PermissionManager
@@ -122,6 +122,8 @@ class ExecutionEngine:
         permissions: PermissionManager,
         approvals: ApprovalManager,
         audit: AuditLog | None = None,
+        *,
+        idempotency_backend: IdempotencyBackend | None = None,
     ) -> "ExecutionEngine":
         return cls(
             registry, permissions, approvals, audit,
@@ -129,7 +131,7 @@ class ExecutionEngine:
             max_retries_cap=settings.max_retries_cap,
             retry_base_delay_s=settings.retry_base_delay_s,
             retry_max_delay_s=settings.retry_max_delay_s,
-            idempotency=IdempotencyStore(settings.idempotency_ttl_s),
+            idempotency=IdempotencyStore(settings.idempotency_ttl_s, backend=idempotency_backend),
         )
 
     # ------------------------------------------------------------------ public

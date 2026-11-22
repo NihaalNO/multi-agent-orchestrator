@@ -88,6 +88,28 @@ def check_config(settings: Settings, environ: dict[str, str] | None = None) -> t
         except ConfigurationError as exc:
             errors.append(f"principals: {exc.message}")
 
+    if settings.state_path is None:
+        warnings.append("ORCH_STATE_PATH is not set: requests, approvals and duplicate protection are kept in "
+                        "memory and lost on restart.")
+    elif settings.state_path.is_dir():
+        errors.append(f"ORCH_STATE_PATH {settings.state_path} is a directory; it must be a file path.")
+    elif settings.state_path.exists():
+        import sqlite3
+
+        from orchestrator.state import SCHEMA_VERSION
+
+        try:
+            conn = sqlite3.connect(f"file:{settings.state_path.as_posix()}?mode=ro", uri=True)
+            try:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+            finally:
+                conn.close()
+            if version > SCHEMA_VERSION:
+                errors.append(f"{settings.state_path} was written by a newer orchestrator "
+                              f"(schema {version} > {SCHEMA_VERSION}).")
+        except sqlite3.Error as exc:
+            errors.append(f"state database {settings.state_path} cannot be read: {exc}")
+
     if settings.policy_path is None:
         warnings.append("ORCH_POLICY_PATH is not set: no grants, so every tool call will be denied.")
     else:

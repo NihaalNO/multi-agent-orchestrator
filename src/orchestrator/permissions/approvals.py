@@ -7,7 +7,8 @@ operation, resource and a SHA-256 digest of the canonical arguments. It is:
 * time-limited (``ttl``) and single-use (``consume`` marks it ``consumed``);
 * invalid for any other arguments — approving "delete row 5" cannot authorize "delete all".
 
-Storage is in-memory (spec §4: add persistence only when required). Every transition is
+Storage is pluggable (``ApprovalStore``): in-memory by default, SQLite when ``ORCH_STATE_PATH``
+is set (``orchestrator.state``), so pending approvals survive a restart. Every transition is
 audited.
 """
 
@@ -18,7 +19,7 @@ import hashlib
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from orchestrator.contracts import ApprovalRequest, ApprovalStatus, Principal
 from orchestrator.errors import ApprovalRequiredError, OrchestratorError, PermissionDeniedError
@@ -41,6 +42,44 @@ def _preview(args: dict[str, Any]) -> str:
     return text if len(text) <= _PREVIEW_CHARS else text[: _PREVIEW_CHARS - 1] + "…"
 
 
+_LIVE = (ApprovalStatus.PENDING, ApprovalStatus.APPROVED)
+
+
+class ApprovalStore(Protocol):
+    def get(self, approval_id: str) -> ApprovalRequest | None: ...
+    def put(self, item: ApprovalRequest) -> None: ...
+    def all(self) -> list[ApprovalRequest]: ...
+    def find_live(self, requested_by: str, request_id: str, task_id: str, tool_id: str,
+                  operation: str, digest: str) -> ApprovalRequest | None: ...
+    def due_for_expiry(self, now: datetime) -> list[ApprovalRequest]: ...
+
+
+class InMemoryApprovalStore:
+    def __init__(self) -> None:
+        self._items: dict[str, ApprovalRequest] = {}
+
+    def get(self, approval_id: str) -> ApprovalRequest | None:
+        return self._items.get(approval_id)
+
+    def put(self, item: ApprovalRequest) -> None:
+        self._items[item.approval_id] = item
+
+    def all(self) -> list[ApprovalRequest]:
+        return list(self._items.values())
+
+    def find_live(self, requested_by: str, request_id: str, task_id: str, tool_id: str,
+                  operation: str, digest: str) -> ApprovalRequest | None:
+        key = (requested_by, request_id, task_id, tool_id, operation, digest)
+        for item in self._items.values():
+            if item.status in _LIVE and (item.requested_by, item.request_id, item.task_id, item.tool_id,
+                                         item.operation, item.args_digest) == key:
+                return item
+        return None
+
+    def due_for_expiry(self, now: datetime) -> list[ApprovalRequest]:
+        return [i for i in self._items.values() if i.status in _LIVE and now >= i.expires_at]
+
+
 class ApprovalManager:
     def __init__(
         self,
@@ -49,12 +88,13 @@ class ApprovalManager:
         approver_role: str = "approver",
         ttl: timedelta = timedelta(hours=1),
         clock: Callable[[], datetime] | None = None,
+        store: ApprovalStore | None = None,
     ) -> None:
         self._audit = audit or AuditLog()
         self._approver_role = approver_role
         self._ttl = ttl
         self._now = clock or (lambda: datetime.now(UTC))
-        self._items: dict[str, ApprovalRequest] = {}
+        self._store: ApprovalStore = store if store is not None else InMemoryApprovalStore()
         self._lock = asyncio.Lock()
 
     @property
@@ -79,13 +119,9 @@ class ApprovalManager:
         digest = args_digest(args)
         async with self._lock:
             self._expire_locked()
-            for item in self._items.values():
-                if (
-                    item.status in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED)
-                    and (item.requested_by, item.request_id, item.task_id, item.tool_id, item.operation, item.args_digest)
-                    == (principal.user_id, request_id, task_id, tool_id, operation, digest)
-                ):
-                    return item
+            existing = self._store.find_live(principal.user_id, request_id, task_id, tool_id, operation, digest)
+            if existing is not None:
+                return existing
             now = self._now()
             item = ApprovalRequest(
                 approval_id=uuid.uuid4().hex,
@@ -100,7 +136,7 @@ class ApprovalManager:
                 created_at=now,
                 expires_at=now + self._ttl,
             )
-            self._items[item.approval_id] = item
+            self._store.put(item)
         self._audit.record(
             "approval.requested",
             request_id=request_id,
@@ -129,7 +165,7 @@ class ApprovalManager:
                     "arguments differ from the approved arguments", details={"approval_id": approval_id}
                 )
             item = item.model_copy(update={"status": ApprovalStatus.CONSUMED})
-            self._items[approval_id] = item
+            self._store.put(item)
         self._audit.record("approval.consumed", request_id=item.request_id, task_id=item.task_id,
                            tool_id=item.tool_id, approval_id=approval_id)
         return item
@@ -158,7 +194,7 @@ class ApprovalManager:
                     "note": (note or None) and note[:1000],
                 }
             )
-            self._items[approval_id] = item
+            self._store.put(item)
         self._audit.record(
             "approval.approved" if approve else "approval.denied",
             request_id=item.request_id, task_id=item.task_id, tool_id=item.tool_id,
@@ -175,7 +211,7 @@ class ApprovalManager:
         return item
 
     def list(self, status: ApprovalStatus | None = None) -> list[ApprovalRequest]:
-        items = [self.get(i) for i in self._items]
+        items = [self.get(i.approval_id) for i in self._store.all()]
         return sorted(
             (i for i in items if status is None or i.status == status), key=lambda i: i.created_at
         )
@@ -183,15 +219,13 @@ class ApprovalManager:
     # ------------------------------------------------------------------ internals
 
     def _require(self, approval_id: str) -> ApprovalRequest:
-        try:
-            return self._items[approval_id]
-        except KeyError:
-            raise ApprovalNotFoundError(f"approval {approval_id!r} not found") from None
+        item = self._store.get(approval_id)
+        if item is None:
+            raise ApprovalNotFoundError(f"approval {approval_id!r} not found")
+        return item
 
     def _expire_locked(self) -> None:
-        now = self._now()
-        for aid, item in list(self._items.items()):
-            if item.status in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED) and now >= item.expires_at:
-                self._items[aid] = item.model_copy(update={"status": ApprovalStatus.EXPIRED})
-                self._audit.record("approval.expired", request_id=item.request_id, task_id=item.task_id,
-                                   tool_id=item.tool_id, approval_id=aid)
+        for item in self._store.due_for_expiry(self._now()):
+            self._store.put(item.model_copy(update={"status": ApprovalStatus.EXPIRED}))
+            self._audit.record("approval.expired", request_id=item.request_id, task_id=item.task_id,
+                               tool_id=item.tool_id, approval_id=item.approval_id)

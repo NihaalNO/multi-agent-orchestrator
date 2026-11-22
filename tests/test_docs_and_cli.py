@@ -97,9 +97,10 @@ def test_check_config_flags_common_mistakes(tmp_path):
     assert "no API key is set" in text
 
 
-def test_check_config_with_example_files():
+def test_check_config_with_example_files(tmp_path):
     settings = Settings(policy_path=ROOT / "config/policy.example.json",
-                        principals_path=ROOT / "config/principals.example.json", llm_provider="rule_based")
+                        principals_path=ROOT / "config/principals.example.json", llm_provider="rule_based",
+                        state_path=tmp_path / "state.db")
     errors, warnings = check_config(settings, environ={})
     assert not errors
     assert warnings[0] == "principals file still contains the example placeholder hashes."

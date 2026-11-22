@@ -18,24 +18,61 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Protocol
 
 from orchestrator.contracts import TaskResult, TaskStatus
 
 
+class IdempotencyBackend(Protocol):
+    """Where completed results are kept. Expiry times are wall-clock epoch seconds, so they stay
+    meaningful across restarts when the backend is persistent."""
+
+    def get(self, key: str, now: float) -> TaskResult | None: ...
+    def put(self, key: str, expires_at: float, result: TaskResult) -> None: ...
+    def evict(self, now: float) -> None: ...
+
+
+class InMemoryIdempotencyBackend:
+    def __init__(self) -> None:
+        self._done: dict[str, tuple[float, TaskResult]] = {}
+
+    def get(self, key: str, now: float) -> TaskResult | None:
+        entry = self._done.get(key)
+        return entry[1] if entry and entry[0] > now else None
+
+    def put(self, key: str, expires_at: float, result: TaskResult) -> None:
+        self._done[key] = (expires_at, result)
+
+    def evict(self, now: float) -> None:
+        for k in [k for k, (exp, _) in self._done.items() if exp <= now]:
+            del self._done[k]
+
+
 class IdempotencyStore:
-    def __init__(self, ttl_s: float = 24 * 3600, *, clock: Callable[[], float] = time.monotonic) -> None:
+    """In-flight calls are coordinated in memory (they cannot outlive the process anyway);
+    completed results live in the backend, which may be persistent."""
+
+    def __init__(
+        self,
+        ttl_s: float = 24 * 3600,
+        *,
+        clock: Callable[[], float] = time.time,
+        backend: IdempotencyBackend | None = None,
+    ) -> None:
         self._ttl = ttl_s
         self._clock = clock
-        self._done: dict[str, tuple[float, TaskResult]] = {}
+        self._backend: IdempotencyBackend = backend if backend is not None else InMemoryIdempotencyBackend()
         self._inflight: dict[str, asyncio.Future[TaskResult]] = {}
         self._lock = asyncio.Lock()
 
     async def run_once(self, key: str, fn: Callable[[], Awaitable[TaskResult]]) -> TaskResult:
         while True:
             async with self._lock:
-                self._evict()
-                if key in self._done:
-                    return self._done[key][1].model_copy(update={"deduplicated": True})
+                now = self._clock()
+                self._backend.evict(now)
+                done = self._backend.get(key, now)
+                if done is not None:
+                    return done.model_copy(update={"deduplicated": True})
                 waiting = self._inflight.get(key)
                 if waiting is None:
                     future: asyncio.Future[TaskResult] = asyncio.get_running_loop().create_future()
@@ -59,15 +96,9 @@ class IdempotencyStore:
         async with self._lock:
             self._inflight.pop(key, None)
             if result.status == TaskStatus.SUCCEEDED:
-                self._done[key] = (self._clock() + self._ttl, result)
+                self._backend.put(key, self._clock() + self._ttl, result)
         future.set_result(result)
         return result
-
-    def _evict(self) -> None:
-        now = self._clock()
-        for k in [k for k, (exp, _) in self._done.items() if exp <= now]:
-            del self._done[k]
-
 
 class ResourceLocks:
     def __init__(self) -> None:

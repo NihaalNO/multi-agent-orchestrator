@@ -18,7 +18,7 @@ Remaining before a production rollout:
 |---|---|---|
 | Live run of a real planner | ⛔ | any one of: Anthropic credits, a Gemini key (`--planner gemini --search gemini`), a Groq key (`--planner groq`), or a local Ollama (`--planner ollama`, no key) with `python examples/mvp_demo.py` |
 | Live web search run | ⛔ | built for both providers (`ORCH_SEARCH_BACKEND=anthropic` / `gemini`); needs a working key for either |
-| Persistent requests/approvals/idempotency (multi-instance) | ⬜ | a database + distributed lock, when one instance is no longer enough |
+| Multi-instance deployment | ⬜ | durable state is done (SQLite, single instance); scaling out needs a shared database + distributed lock, when one instance is no longer enough |
 | Stronger Python isolation | ⬜ | container execution, if untrusted users get `python_exec` |
 | File upload endpoint, LLM-written summaries, OpenTelemetry export | ⬜ | optional extensions (spec §11) |
 
@@ -79,7 +79,7 @@ Remaining before a production rollout:
 | Principal-based API auth (hashed API keys), admin/approver roles, approval endpoints | ✅ | `api/auth.py`, `api/app.py` |
 | Policy / principals loaded from JSON files | ✅ | `permissions/loader.py`, `config/*.example.json` |
 | JWT / OAuth 2.0 | ⬜ | not needed for MVP; `ApiKeyAuthenticator` is the swap point |
-| Persistent approval store | ⬜ | in-memory for now (approvals are lost on restart) |
+| Persistent approval store | ✅ | SQLite with `ORCH_STATE_PATH` (`state.py`) |
 
 ## Phase 05 — Parallel Execution  ✅
 
@@ -95,7 +95,7 @@ Remaining before a production rollout:
 | `$ref` resolution from upstream outputs (dict keys, list indices, deep-copied) | ✅ | `execution/refs.py` |
 | Partial failure: dependents `skipped`, independent branches continue | ✅ | scheduler |
 | Whole-plan deadline and caller cancellation, propagated into tools | ✅ | scheduler; Python tool kills its child process on cancel |
-| Idempotency keys for non-idempotent operations | ✅ | `IdempotencyStore` (in-memory, TTL) |
+| Idempotency keys for non-idempotent operations | ✅ | `IdempotencyStore` (TTL; results in memory or SQLite) |
 | Per-resource write locks | ✅ | `ResourceLocks` |
 | Resuming an execution after approval without re-running other tasks | ✅ | done in Phase 07 (`prior=` results) |
 
@@ -124,7 +124,7 @@ Remaining before a production rollout:
 | Item | Status | Where |
 |---|---|---|
 | `Orchestrator` facade running the 12-stage lifecycle | ✅ | `core.py` (`submit`, `resume`, `get`) |
-| Request records with state, plan, routing, authorization, report, summary, stage timings | ✅ | `RequestRecord`, in-memory `RequestStore` |
+| Request records with state, plan, routing, authorization, report, summary, stage timings | ✅ | `RequestRecord`; `RequestStore` in memory or SQLite |
 | `POST /requests`, `GET /requests/{id}`, `POST /requests/{id}/resume` | ✅ | `api/app.py`; 200 / 202 / error status codes |
 | Client idempotency (`Idempotency-Key` header): same key → same request, no re-planning | ✅ | `RequestStore.by_key` |
 | Resume after approval without re-running finished tasks | ✅ | `DagScheduler.execute(prior=...)` (closes the Phase 05 gap) |
@@ -138,7 +138,7 @@ Remaining before a production rollout:
 | Live Claude planner run | ⛔ | needs an Anthropic API key; only tested with a fake client |
 | LLM-written result summary | ⬜ | deterministic summary for now; a Claude summarizer can be added behind the same field |
 | File upload endpoint | ⬜ | files are placed in `ORCH_FILE_TOOL_ROOT` out of band |
-| Persistent request store | ⬜ | in-memory: records are lost on restart |
+| Persistent request store | ✅ | SQLite with `ORCH_STATE_PATH`; interrupted requests marked failed on restart, never re-run; tests simulate restarts (`tests/test_state.py`) |
 
 ## Phase 08 — Documentation and Deployment  ✅
 

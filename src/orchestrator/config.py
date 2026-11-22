@@ -64,6 +64,9 @@ class Settings(BaseModel):
     approver_role: str = "approver"
     approval_ttl_s: int = Field(default=3600, ge=60, le=7 * 24 * 3600)
 
+    # Durable state (requests, approvals, idempotency) in SQLite. Unset → in memory, lost on restart.
+    state_path: Path | None = None
+
     # Observability
     audit_log_path: Path | None = None
     audit_to_log: bool = Field(default=False, description="Also write audit events to the application log.")
