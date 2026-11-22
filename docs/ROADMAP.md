@@ -20,7 +20,7 @@ Remaining before a production rollout:
 | Live web search run | ⛔ | built for both providers (`ORCH_SEARCH_BACKEND=anthropic` / `gemini`); needs a working key for either |
 | Multi-instance deployment | ⬜ | durable state is done (SQLite, single instance); scaling out needs a shared database + distributed lock, when one instance is no longer enough |
 | Stronger Python isolation | ⬜ | container execution, if untrusted users get `python_exec` |
-| File upload endpoint, LLM-written summaries, OpenTelemetry export | ⬜ | optional extensions (spec §11) |
+| LLM-written summaries, OpenTelemetry export, MCP tool discovery, container Python sandbox | ⬜ | optional extensions (spec §11) |
 
 ---
 
@@ -137,7 +137,7 @@ Remaining before a production rollout:
 | Smoke test against a real `uvicorn` server | ✅ | done manually (not automated) |
 | Live Claude planner run | ⛔ | needs an Anthropic API key; only tested with a fake client |
 | LLM-written result summary | ⬜ | deterministic summary for now; a Claude summarizer can be added behind the same field |
-| File upload endpoint | ⬜ | files are placed in `ORCH_FILE_TOOL_ROOT` out of band |
+| File upload endpoint | ✅ | `PUT/GET/DELETE /files` (`uploads.py`): streamed size cap, type allow-list, safe paths, atomic no-overwrite commit, per-user folders via `{user_id}` grants |
 | Persistent request store | ✅ | SQLite with `ORCH_STATE_PATH`; interrupted requests marked failed on restart, never re-run; tests simulate restarts (`tests/test_state.py`) |
 
 ## Phase 08 — Documentation and Deployment  ✅

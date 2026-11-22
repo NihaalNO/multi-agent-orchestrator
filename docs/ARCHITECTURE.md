@@ -237,6 +237,7 @@ infinite or pointless retry loops (spec §6.1).
 | Result summary | Deterministic text built from the report | Reproducible and testable; an LLM summary can be layered on later without changing the record shape. |
 | Search results from Claude | Only structured `web_search_tool_result` blocks (titles, URLs, dates) and citation quotes (snippets); the model's prose is ignored | The search tool must report what the web returned, not what a model wrote; a hallucinated URL is impossible by construction. |
 | Default web search | Not registered without a real backend | A tool that always returns nothing would turn "not searched" into "nothing found". The gap is reported as a caveat instead. |
+| File uploads | `PUT /files/{path}` with a raw streamed body; permission target `uploads` separate from the file tool; `{user_id}` placeholders in grant patterns | No extra dependency (multipart needs one) and the size cap is enforced while bytes arrive. A separate target means plans can never write files. Placeholders give per-user folders with one grant instead of one per user. Uploads stage in a hidden folder and commit atomically (hard link / exclusive create), so racing uploads cannot silently replace each other. |
 | Approval timing | Approvals are requested and consumed at execution time, with resolved arguments | The approved digest must match the exact arguments, which may depend on upstream outputs unknown at plan time. |
 
 ---

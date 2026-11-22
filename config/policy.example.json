@@ -2,17 +2,24 @@
   "grants": [
     {
       "subject": "role:analyst",
+      "tool_id": "uploads",
+      "max_access": "write",
+      "resources": ["file:users/{user_id}/*"],
+      "description": "Upload, list and delete files in your own folder (users/<your id>/)"
+    },
+    {
+      "subject": "role:analyst",
       "tool_id": "file_processing",
       "max_access": "read",
-      "resources": ["file:*"],
-      "description": "Read any uploaded file"
+      "resources": ["file:users/{user_id}/*", "file:shared/*"],
+      "description": "Read your own files and the shared folder"
     },
     {
       "subject": "role:analyst",
       "tool_id": "file_processing",
       "effect": "deny",
-      "resources": ["file:private/*"],
-      "description": "...except the private folder"
+      "resources": ["file:shared/restricted/*"],
+      "description": "...except shared/restricted"
     },
     {
       "subject": "role:analyst",
@@ -31,7 +38,7 @@
       "subject": "role:admin",
       "max_access": "admin",
       "allow_sensitive": true,
-      "description": "Everything; sensitive operations still need a separate approver"
+      "description": "Everything, including uploading to shared/; sensitive operations still need a separate approver"
     }
   ]
 }

@@ -79,7 +79,9 @@ Copy-Item config\policy.example.json config\policy.json; Copy-Item config\princi
 - `config/policy.json` lists grants: `subject` (`role:<name>` or `user:<id>`), `tool_id`,
   `operation`, `max_access` (`read` < `write` < `execute` < `admin`), optional `resources` globs
   such as `file:reports/*`, `effect: "deny"` to carve out exceptions, and `allow_sensitive` to let
-  sensitive operations be *requested* (they still need an approver).
+  sensitive operations be *requested* (they still need an approver). `{user_id}` in a pattern means
+  the caller's own id: the example policy gives every analyst a private folder with
+  `file:users/{user_id}/*`. Uploads have their own target, `tool_id: "uploads"`.
 - `config/principals.json` maps users to roles and to the **SHA-256 hash** of their API key. The
   example hashes are placeholders that match no key. Create a key and its hash (the key is shown
   once; `hash-key` without `--generate` hashes an existing key at a hidden prompt):
@@ -102,11 +104,18 @@ Clients send `Authorization: Bearer <api key>`. `/health` is the only public end
 
 ## Making requests
 
-Put input files in the upload folder (`ORCH_FILE_TOOL_ROOT`, default `data/uploads`), then:
+Upload a file (the body is the raw file; with the example policy, analysts write to
+`users/<their id>/`):
+
+```powershell
+Invoke-RestMethod -Method Put -Uri http://127.0.0.1:8000/files/users/alice/sales.csv -Headers @{ Authorization = "Bearer <your api key>" } -InFile .\sales.csv
+```
+
+Then ask about it:
 
 ```powershell
 $h = @{ Authorization = "Bearer <your api key>"; "Idempotency-Key" = "report-001" }
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/requests -Headers $h -ContentType "application/json" -Body '{"text": "Read sales.csv and calculate its average revenue using Python"}'
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/requests -Headers $h -ContentType "application/json" -Body '{"text": "Read users/alice/sales.csv and calculate its average revenue using Python"}'
 ```
 
 The response is the request record: `state` (`completed`, `failed`, `awaiting_approval`,

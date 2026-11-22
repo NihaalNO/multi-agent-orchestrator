@@ -27,6 +27,31 @@ from orchestrator.errors import PermissionDeniedError, ToolExecutionError
 from orchestrator.tools.base import RESOURCE_PENDING, ToolAdapter
 
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
+
+
+def resolve_inside(root: Path, relative: str) -> Path:
+    """Map a user-supplied relative path to a location inside ``root``, or raise
+    ``PermissionDeniedError``. Rejects absolute paths, ``..``, hidden segments (``.name``, which
+    also keeps the upload staging area unreachable) and symlinks that point outside the root."""
+    candidate = Path(relative)
+    if not relative or candidate.is_absolute() or candidate.drive or ".." in candidate.parts:
+        raise PermissionDeniedError("path must be relative to the upload directory", details={"path": relative})
+    if any(part.startswith(".") for part in candidate.parts):
+        raise PermissionDeniedError("hidden files and folders are not allowed", details={"path": relative})
+    resolved = (root / candidate).resolve()
+    if not resolved.is_relative_to(root):  # catches symlink escapes
+        raise PermissionDeniedError("path escapes the upload directory", details={"path": relative})
+    return resolved
+
+
+def file_resource(relative: str) -> str:
+    """The permission resource for a path: ``file:<normalised relative path>``. Normalising
+    (``a/../b`` -> ``b``) matters because grants are matched against this string."""
+    return "file:" + posixpath.normpath(relative.replace("\\", "/"))
+
+
+def is_hidden(relative_posix: str) -> bool:
+    return any(part.startswith(".") for part in relative_posix.split("/"))
 DEFAULT_MAX_ROWS = 10_000
 
 _PATH = {"type": "string", "minLength": 1, "maxLength": 512}
@@ -118,15 +143,7 @@ class FileProcessingTool(ToolAdapter):
 
     def resolve(self, relative: str) -> Path:
         """Map a user-supplied path to a file inside the root, or raise."""
-        candidate = Path(relative)
-        if candidate.is_absolute() or candidate.drive or ".." in candidate.parts:
-            raise PermissionDeniedError(
-                "path must be relative to the upload directory", details={"path": relative}
-            )
-        resolved = (self._root / candidate).resolve()
-        if not resolved.is_relative_to(self._root):  # catches symlink escapes
-            raise PermissionDeniedError("path escapes the upload directory", details={"path": relative})
-        return resolved
+        return resolve_inside(self._root, relative)
 
     def _read_bytes(self, relative: str) -> tuple[Path, bytes]:
         path = self.resolve(relative)
@@ -156,6 +173,8 @@ class FileProcessingTool(ToolAdapter):
             for p in self._root.rglob("*"):
                 if p.is_file() and p.resolve().is_relative_to(self._root):
                     rel = p.relative_to(self._root).as_posix()
+                    if is_hidden(rel):
+                        continue
                     if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(p.name, pattern):
                         out.append(rel)
             return sorted(out)
@@ -203,7 +222,7 @@ class FileProcessingTool(ToolAdapter):
             return "file:"
         path = args.get("path")
         if isinstance(path, str):
-            return "file:" + posixpath.normpath(path.replace("\\", "/"))
+            return file_resource(path)
         if find_refs(path):
             return RESOURCE_PENDING
         return None

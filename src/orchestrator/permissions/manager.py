@@ -55,6 +55,10 @@ class PermissionManager:
         self._registry = registry
         self._audit = audit or AuditLog()
 
+    @property
+    def policy(self) -> PermissionPolicy:
+        return self._policy
+
     def resource_for(self, tool_id: str, operation: str, args: dict[str, Any]) -> tuple[str | None, bool]:
         """(resource, pending) for a call, as reported by the tool adapter."""
         res = self._registry.get(tool_id).adapter.resource_for(operation, args)

@@ -66,6 +66,8 @@ All settings are environment variables. Invalid values stop the server at startu
 | `ORCH_EXECUTION_DEADLINE_S` | unset | time limit for a whole plan; unfinished tasks are cancelled |
 | `ORCH_FILE_TOOL_ROOT` | `data/uploads` | the only folder the file tool can read |
 | `ORCH_PYTHON_EXEC_TIMEOUT_S` | `10` | Python snippets are killed after this |
+| `ORCH_UPLOAD_MAX_BYTES` | `5242880` (5 MB) | largest accepted upload; matches the file tool's read limit, since a bigger file could not be read |
+| `ORCH_UPLOAD_EXTENSIONS` | `csv,txt,md,json` | comma-separated file types accepted by `PUT /files`; text types must be UTF-8 |
 | `ORCH_SEARCH_BACKEND` | `none` | `none`: no web search tool. `anthropic`: Claude's server-side web search. `gemini`: Gemini with Google Search grounding. Both are billed per search by the provider |
 | `ORCH_SEARCH_MODEL` | provider default | model used for web search (`claude-opus-5-5` / `gemini-3.8-flash`) |
 | `ORCH_SEARCH_MAX_USES` | `3` | searches Claude may run for one web search call (1–10; Anthropic only) |
@@ -140,4 +142,6 @@ PostgreSQL and Redis), deliberately deferred until it is needed.
       service account can read and use the network. Grant `python_exec` only to trusted users, or
       run it in a container (`IsolationLevel.CONTAINER` is reserved for that).
 - [ ] The file tool is limited to `ORCH_FILE_TOOL_ROOT`; keep nothing sensitive there.
+- [ ] Upload grants are scoped (e.g. `file:users/{user_id}/*`) so users cannot read or overwrite
+      each other's files; only admins write to shared folders.
 - [ ] Rotate a key by replacing its hash and restarting; remove a user by deleting their entry.

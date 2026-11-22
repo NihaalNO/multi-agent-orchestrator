@@ -36,6 +36,9 @@ class Settings(BaseModel):
     # Tools
     file_tool_root: Path = Path("data/uploads")
     python_exec_timeout_s: float = Field(default=10.0, gt=0, le=120)
+    # Uploads (PUT /files). Default cap = the file tool's read cap: a bigger file could not be read.
+    upload_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1, le=1024 * 1024 * 1024)
+    upload_extensions: str = Field(default="csv,txt,md,json", description="Comma-separated accepted file types.")
     # "none": no web search tool is registered. "anthropic": Claude's server-side web search.
     # "gemini": Gemini with Google Search grounding. Both are billed per search by their provider.
     search_backend: Literal["none", "anthropic", "gemini"] = "none"
@@ -87,6 +90,10 @@ class Settings(BaseModel):
                 "Invalid orchestrator configuration",
                 details={"errors": exc.errors(include_url=False, include_input=False)},
             ) from exc
+
+    @property
+    def upload_extension_set(self) -> frozenset[str]:
+        return frozenset("." + e.strip().lower().lstrip(".") for e in self.upload_extensions.split(",") if e.strip())
 
     @property
     def planner_model(self) -> str | None:

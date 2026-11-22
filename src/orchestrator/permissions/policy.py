@@ -10,6 +10,9 @@ Evaluation for (principal, tool, operation, resource):
    allowed only *with human approval* (``requires_approval=True``).
 5. Nothing matched → denied (default deny).
 
+``{user_id}`` in a resource pattern stands for the caller's own user id, so one grant such as
+``file:users/{user_id}/*`` gives every user a private folder.
+
 Resource matching is case-insensitive (``fnmatch`` over case-folded strings) so a deny rule
 for ``file:secret/*`` cannot be bypassed with ``SECRET/x`` on a case-insensitive filesystem.
 When the resource is still pending (it depends on an upstream output), resource-scoped rules
@@ -33,13 +36,14 @@ from orchestrator.contracts import (
 )
 
 _Match = Literal["yes", "no", "provisional"]
+USER_PLACEHOLDER = "{user_id}"
 
 
 def _name_matches(pattern: str, value: str) -> bool:
     return pattern == "*" or pattern == value
 
 
-def _resource_match(grant: PermissionGrant, resource: str | None, pending: bool) -> _Match:
+def _resource_match(grant: PermissionGrant, resource: str | None, pending: bool, user_id: str) -> _Match:
     if not grant.resources:
         return "yes"
     if pending:
@@ -47,7 +51,10 @@ def _resource_match(grant: PermissionGrant, resource: str | None, pending: bool)
     if resource is None:
         return "no"
     folded = resource.casefold()
-    return "yes" if any(fnmatchcase(folded, p.casefold()) for p in grant.resources) else "no"
+    # "{user_id}" in a pattern means the caller's own id, e.g. "file:users/{user_id}/*". User ids
+    # are restricted to [A-Za-z0-9_.@-], so the substitution cannot inject glob characters.
+    patterns = (p.replace(USER_PLACEHOLDER, user_id).casefold() for p in grant.resources)
+    return "yes" if any(fnmatchcase(folded, p) for p in patterns) else "no"
 
 
 class GrantPolicy:
@@ -82,7 +89,7 @@ class GrantPolicy:
         for g in applicable:
             if g.effect != "deny":
                 continue
-            m = _resource_match(g, resource, resource_pending)
+            m = _resource_match(g, resource, resource_pending, principal.user_id)
             if m == "yes":
                 return PermissionDecision(allowed=False, reason=f"denied by rule for {g.subject}: {target}", matched_grant=g)
             if m == "provisional":
@@ -97,7 +104,7 @@ class GrantPolicy:
             if not g.max_access.covers(operation.access):
                 insufficient_access = True
                 continue
-            m = _resource_match(g, resource, resource_pending)
+            m = _resource_match(g, resource, resource_pending, principal.user_id)
             if m != "no":
                 allows.append((g, m))
 

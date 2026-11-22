@@ -51,7 +51,7 @@ Plan, route, authorize, execute and reconcile a natural-language request.
 | Field | Notes |
 |---|---|
 | `text` | 1–20,000 characters. Treated as untrusted data by the planner. |
-| `files` | Names of files already in the upload folder that the request may use. |
+| `files` | Names of uploaded files (see [Files](#files)) that the request may use. |
 | `allow_partial` | `true`: run the parts that can be routed and report the rest as caveats. `false` (default): reject the whole request if any part cannot be routed. |
 
 Optional header **`Idempotency-Key`** (≤ 200 chars): re-sending the same key (same user) returns
@@ -146,6 +146,34 @@ approval is single-use, expires (`ORCH_APPROVAL_TTL_S`), and is valid only for t
 shown. Deciding twice → `409`.
 
 ---
+
+## Files
+
+Upload files for requests to use. Permissions use the target `tool_id: "uploads"` (operations
+`upload`, `list`, `delete`) with the resource `file:<path>`; it is separate from the file-reading
+tool, so plans can never write or delete files. With the example policy each analyst owns
+`users/<their id>/`.
+
+### `PUT /files/{path:path}`
+
+The request body is the raw file (any client can stream it; no multipart). `?overwrite=true` replaces
+an existing file; without it an existing name is a `409`, even when two uploads race.
+
+| Status | Meaning |
+|---|---|
+| `201` / `200` | created / replaced; body `{"path", "size_bytes", "sha256", "modified"}` |
+| `403` | not permitted for this path, or an unsafe path (absolute, `..`, hidden `.name` segments) |
+| `409` `file_exists` | name taken and `overwrite` not set |
+| `413` `upload_too_large` | over `ORCH_UPLOAD_MAX_BYTES` (checked while streaming; nothing is kept) |
+| `415` `unsupported_file_type` | extension not in `ORCH_UPLOAD_EXTENSIONS`, or a text file that is not UTF-8 |
+
+### `GET /files?pattern=*.csv`
+
+Files you may list (`uploads.list` on each file), with size and modification time.
+
+### `DELETE /files/{path:path}`
+
+Delete a file you may delete. `404` if it does not exist. Deletions are audited (`file.deleted`).
 
 ## Discovery
 

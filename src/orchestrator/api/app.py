@@ -4,6 +4,8 @@ Every endpoint except ``/health`` requires ``Authorization: Bearer <api key>``; 
 a ``Principal`` (see ``api/auth.py``). Admin endpoints additionally require the admin role,
 approval decisions the approver role.
 
+Files: PUT /files/{path} (raw body), GET /files, DELETE /files/{path} — see ``orchestrator.uploads``.
+
 Request lifecycle over HTTP:
   POST /requests                 plan, route, authorize, execute, resolve; returns the record
   GET  /requests/{id}            the record (owner or admin)
@@ -52,11 +54,22 @@ from orchestrator.permissions import (
     load_principals,
 )
 from orchestrator.registry.registry import ToolRegistry
+from orchestrator.uploads import (
+    FileExistsConflictError,
+    UnsupportedFileTypeError,
+    UploadedFileNotFoundError,
+    UploadStore,
+    UploadTooLargeError,
+)
 
 _STATUS_BY_ERROR: list[tuple[type[OrchestratorError], int]] = [
     (ToolNotFoundError, 404),
     (OperationNotFoundError, 404),
     (ApprovalNotFoundError, 404),
+    (UploadedFileNotFoundError, 404),
+    (UploadTooLargeError, 413),
+    (UnsupportedFileTypeError, 415),
+    (FileExistsConflictError, 409),
     (RequestNotFoundError, 404),
     (PermissionDeniedError, 403),
     (DuplicateToolError, 409),
@@ -110,6 +123,7 @@ def create_app(
     permissions: PermissionManager | None = None,
     approvals: ApprovalManager | None = None,
     orchestrator: Orchestrator | None = None,
+    uploads: UploadStore | None = None,
     metrics: MetricsSink | None = None,
     register_defaults: bool | None = None,
 ) -> FastAPI:
@@ -153,6 +167,11 @@ def create_app(
             store=state.approvals if state else None,
         )
 
+    if uploads is None:
+        uploads = UploadStore(
+            settings.file_tool_root, permissions.policy, audit,
+            max_bytes=settings.upload_max_bytes, allowed_extensions=settings.upload_extension_set,
+        )
     if orchestrator is None:
         orchestrator = Orchestrator.build(
             settings, registry, permissions, approvals, audit,
@@ -257,6 +276,26 @@ def create_app(
     @app.post("/requests/{request_id}/resume")
     async def resume_request(request_id: str, principal: PrincipalDep) -> JSONResponse:
         return _record_response(await orchestrator.resume(request_id, principal))
+
+    # ------------------------------------------------------------------ files
+
+    @app.put("/files/{path:path}")
+    async def upload_file(path: str, request: Request, principal: PrincipalDep, overwrite: bool = False) -> JSONResponse:
+        length = request.headers.get("content-length")
+        info, replaced = await uploads.save(
+            principal, path, request.stream(), overwrite=overwrite,
+            declared_size=int(length) if length and length.isdigit() else None,
+        )
+        return JSONResponse(status_code=200 if replaced else 201, content=info.model_dump(mode="json"))
+
+    @app.get("/files")
+    async def list_files(principal: PrincipalDep, pattern: str | None = None) -> dict[str, Any]:
+        return {"files": [f.model_dump(mode="json") for f in uploads.list(principal, pattern)]}
+
+    @app.delete("/files/{path:path}")
+    async def delete_file(path: str, principal: PrincipalDep) -> dict[str, str]:
+        uploads.delete(principal, path)
+        return {"deleted": path}
 
     # ------------------------------------------------------------------ approvals
 
