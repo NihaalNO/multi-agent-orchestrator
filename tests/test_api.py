@@ -141,3 +141,19 @@ def test_chat_ui_is_packaged():
 
     data = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     assert data["tool"]["setuptools"]["package-data"]["orchestrator.api"] == ["static/*"]
+
+
+def test_chat_ui_explains_which_key_and_never_sends_provider_keys():
+    from pathlib import Path
+
+    import orchestrator.api.app as app_module
+
+    static = Path(app_module.__file__).parent / "static"
+    html = (static / "chat.html").read_text(encoding="utf-8")
+    js = (static / "chat.js").read_text(encoding="utf-8")
+    assert "Orchestrator API key" in html and "config/dev/api-key.txt" in html
+    for prefix in ("gsk_", "sk-ant-", "AIza"):
+        assert prefix in js
+    # The provider check runs before signIn (which is what sends the key to /me).
+    handler = js[js.index('addEventListener("submit", async'):]
+    assert handler.index("providerOf(key)") < handler.index("signIn(key)")

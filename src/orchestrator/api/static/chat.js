@@ -64,6 +64,25 @@ function errorText(data, status) {
 
 // ------------------------------------------------------------------ sign in
 
+// Keys of LLM providers, recognised by their published prefixes. They are never sent anywhere:
+// the server holds its own provider key; users sign in with their orchestrator key.
+const PROVIDER_KEYS = [
+  [/^gsk_/, "Groq"],
+  [/^sk-ant-/, "Anthropic"],
+  [/^AIza/, "Google Gemini"],
+  [/^sk-(proj-)?[A-Za-z0-9_-]{20,}$/, "OpenAI"],
+];
+
+// Orchestrator keys (`hash-key --generate`, dev server) are secrets.token_urlsafe(32): exactly 43
+// URL-safe characters, a length no provider key above has. Never mistake one for a provider key.
+const ORCHESTRATOR_KEY = /^[A-Za-z0-9_-]{43}$/;
+
+function providerOf(key) {
+  if (ORCHESTRATOR_KEY.test(key)) return null;
+  for (const [pattern, name] of PROVIDER_KEYS) if (pattern.test(key)) return name;
+  return null;
+}
+
 async function signIn(key) {
   state.key = key;
   const res = await fetch("/me", { headers: { Authorization: `Bearer ${key}` } });
@@ -256,8 +275,18 @@ function autosize() {
 document.addEventListener("DOMContentLoaded", async () => {
   $("signin-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const ok = await signIn($("key").value.trim()).catch(() => false);
-    if (!ok) { $("signin-error").textContent = "That API key was not accepted."; $("signin-error").hidden = false; }
+    const key = $("key").value.trim();
+    const provider = providerOf(key);
+    let message = null;
+    if (provider) {
+      $("key").value = "";
+      message = `That looks like a ${provider} key. It was not sent anywhere. The server already has its own ` +
+        `${provider} key; sign in with your orchestrator API key instead (dev server: config/dev/api-key.txt).`;
+    } else if (!(await signIn(key).catch(() => false))) {
+      message = "That key was not accepted. Use the orchestrator API key issued for your user " +
+        "(dev server: config/dev/api-key.txt), not an LLM provider key.";
+    }
+    if (message) { $("signin-error").textContent = message; $("signin-error").hidden = false; }
   });
   $("signout").addEventListener("click", () => signOut());
   $("file").addEventListener("change", (ev) => { for (const f of ev.target.files) attach(f); ev.target.value = ""; });

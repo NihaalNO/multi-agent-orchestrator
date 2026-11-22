@@ -17,8 +17,10 @@
   <section id="signin" class="signin" hidden>
     <form id="signin-form" class="card">
       <h1>Sign in</h1>
-      <p class="muted">Paste your API key. It stays in this browser tab only and is cleared when the tab closes.</p>
-      <label for="key">API key</label>
+      <p class="muted">Paste your <strong>orchestrator</strong> API key: the key your administrator issued for your user
+        (on the dev server it is in <code>config/dev/api-key.txt</code>). Not a Groq, Anthropic or Gemini key; those stay on the server.</p>
+      <p class="muted">The key stays in this browser tab only and is cleared when the tab closes.</p>
+      <label for="key">Orchestrator API key</label>
       <input id="key" type="password" autocomplete="off" spellcheck="false" required>
       <p id="signin-error" class="error" role="alert" hidden></p>
       <button type="submit" class="primary">Sign in</button>
