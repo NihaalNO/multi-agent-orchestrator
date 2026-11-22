@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, ConfigDict
 
 from orchestrator.config import Settings
@@ -12,6 +14,9 @@ from orchestrator.permissions.manager import PermissionManager, PlanAuthorizatio
 from orchestrator.registry.registry import ToolRegistry
 from orchestrator.routing.planner import Planner, RuleBasedPlanner, ToolCatalog
 from orchestrator.routing.router import CapabilityRouter
+
+
+_CSV_PATH = re.compile(r"[\w\-./]+\.csv\b", re.IGNORECASE)
 
 
 def build_planner(settings: Settings, audit: AuditLog | None = None) -> Planner:
@@ -37,7 +42,8 @@ def build_planner(settings: Settings, audit: AuditLog | None = None) -> Planner:
         client = make_openai_compat_client(profile, api_key=key, base_url=settings.llm_base_url)
         return OpenAICompatPlanner(
             profile, client, model=settings.planner_model, base_url=settings.llm_base_url,
-            json_mode=None if settings.llm_json_mode == "auto" else settings.llm_json_mode, audit=audit,
+            json_mode=None if settings.llm_json_mode == "auto" else settings.llm_json_mode,
+            max_output_tokens=settings.llm_max_output_tokens, audit=audit,
         )
     raise ConfigurationError(
         f"unknown llm_provider {settings.llm_provider!r}; expected one of "
@@ -75,13 +81,52 @@ class RoutingService:
         self._permissions = permissions
         self._audit = audit or AuditLog()
 
+    def _file_columns(self, request: PlanningRequest, principal: Principal) -> dict[str, tuple[str, ...]]:
+        """Column names of the CSVs this request refers to (listed files, plus ``.csv`` paths named
+        in its text) that the principal may read with the file tool. Header only — no data values —
+        so the planner can use real column names instead of guessing them."""
+        if "file_processing" not in self._registry:
+            return {}
+        tool = self._registry.get("file_processing").adapter
+        peek = getattr(tool, "peek_columns", None)
+        if peek is None:
+            return {}
+        candidates = list(dict.fromkeys([*request.files, *_CSV_PATH.findall(request.text)]))[:20]
+        out: dict[str, tuple[str, ...]] = {}
+        for path in candidates:
+            if not path.lower().endswith(".csv"):
+                continue
+            allowed = self._permissions.check(principal, "file_processing", "read_csv", {"path": path},
+                                              request_id=request.request_id, audit=False).allowed
+            if not allowed:
+                continue  # never reveal anything about files the user may not read
+            cols = peek(path)
+            if cols:
+                out[path] = tuple(cols[:200])
+        return out
+
+    @property
+    def supports_feedback(self) -> bool:
+        return bool(getattr(self._planner, "supports_feedback", False))
+
     async def plan_and_route(
-        self, request: PlanningRequest, principal: Principal, *, allow_partial: bool = False
+        self, request: PlanningRequest, principal: Principal, *, allow_partial: bool = False,
+        feedback: str | None = None,
     ) -> RoutingOutcome:
+        """``feedback`` describes a failed earlier attempt (see ``orchestrator.repair``); only
+        planners with ``supports_feedback`` receive it."""
         catalog = ToolCatalog.from_registry(
             self._registry, include=lambda spec, op: self._permissions.operation_visible(principal, spec, op)
         )
-        proposal = await self._planner.plan(request, catalog)
+        columns = self._file_columns(request, principal)
+        if columns:
+            request = request.model_copy(update={"file_columns": columns})
+            self._audit.record("planner.file_hints", request_id=request.request_id, user_id=principal.user_id,
+                               files=sorted(columns))
+        if feedback and self.supports_feedback:
+            proposal = await self._planner.plan(request, catalog, feedback=feedback)  # type: ignore[call-arg]
+        else:
+            proposal = await self._planner.plan(request, catalog)
         self._audit.record(
             "planner.proposal",
             request_id=request.request_id,

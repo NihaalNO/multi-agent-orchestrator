@@ -116,7 +116,7 @@ Remaining before a production rollout:
 | Escalation: unresolved conflicts reported with all candidates, value left unknown | ✅ | `Conflict.escalated`, `ExecutionReport.requires_review` |
 | Conflict decisions audited | ✅ | `conflict.detected` / `.resolved` / `.escalated` |
 | Planner can request cross-checks | ✅ | `compare_group` in the Claude planner's schema and prompt |
-| Automatic re-run / extra verification to break a tie | ⬜ | escalates instead; re-planning belongs to the orchestrator facade (Phase 07) |
+| Automatic re-run / extra verification | 🟡 | conflicts still escalate; plan-caused *failures* are now re-planned with error feedback (`repair.py`, `ORCH_MAX_REPLANS`) |
 | Human sign-off workflow for escalated conflicts | ⬜ | flagged via `requires_review`; an approval-style flow can reuse Phase 04 approvals if needed |
 
 ## Phase 07 — Integration and Testing  ✅

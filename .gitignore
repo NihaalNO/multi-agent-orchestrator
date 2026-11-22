@@ -9,3 +9,4 @@ build/
 dist/
 config/policy.json
 config/principals.json
+config/dev/

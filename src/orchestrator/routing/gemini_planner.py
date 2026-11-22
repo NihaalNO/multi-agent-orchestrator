@@ -82,6 +82,7 @@ def make_gemini_client(api_key: str | None = None) -> Any:
 
 class GeminiPlanner:
     name = "gemini"
+    supports_feedback = True
 
     def __init__(
         self,
@@ -96,13 +97,13 @@ class GeminiPlanner:
         self._timeout = timeout_s
         self._audit = audit or AuditLog()
 
-    async def plan(self, request: PlanningRequest, catalog: ToolCatalog) -> PlanProposal:
+    async def plan(self, request: PlanningRequest, catalog: ToolCatalog, feedback: str | None = None) -> PlanProposal:
         if not catalog.entries:
             return no_tools_proposal(request, self.name)
         try:
             interaction = await self._client.aio.interactions.create(
                 model=self._model,
-                input=user_message(request, catalog),
+                input=user_message(request, catalog, feedback),
                 system_instruction=SYSTEM_PROMPT,
                 response_format={"type": "text", "mime_type": "application/json", "schema": PLAN_SCHEMA},
                 store=False,

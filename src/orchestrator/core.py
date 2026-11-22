@@ -49,6 +49,7 @@ from orchestrator.errors import (
     RequestNotFoundError,
 )
 from orchestrator.execution import DagScheduler, ExecutionEngine
+from orchestrator.repair import AttemptSummary, build_feedback, repairable_failures, reusable_results
 from orchestrator.execution.coordination import IdempotencyBackend
 from orchestrator.observability.audit import AuditLog
 from orchestrator.permissions import ApprovalManager, PermissionManager, PlanAuthorization
@@ -94,6 +95,7 @@ class RequestRecord(BaseModel):
     summary: str = ""
     stages: tuple[StageTiming, ...] = ()
     executions: int = 0
+    replans: tuple[AttemptSummary, ...] = ()  # failed attempts that were re-planned, oldest first
 
     @property
     def pending_approvals(self) -> dict[str, str]:
@@ -181,6 +183,8 @@ def _state_for(report: ExecutionReport) -> RequestState:
 def build_summary(record: RequestRecord) -> str:
     """Deterministic plain-text summary of a request's outcome."""
     lines = [f"Request {record.request_id}: {record.state.value}."]
+    if record.replans:
+        lines.append(f"Re-planned {len(record.replans)} time(s) after plan errors.")
     if record.error is not None:
         lines.append(f"Reason: {record.error.message} ({record.error.code}).")
     report = record.report
@@ -317,7 +321,8 @@ class Orchestrator:
             "unsupported": outcome.routed.unsupported,
             "authorization": outcome.authorization,
         })
-        return await self._execute(record, principal, started, stages, idempotency_key=idempotency_key)
+        return await self._execute(record, principal, started, stages, idempotency_key=idempotency_key,
+                                   request=request, allow_partial=allow_partial)
 
     # ------------------------------------------------------------------ resume
 
@@ -347,9 +352,22 @@ class Orchestrator:
     # ------------------------------------------------------------------ internals
 
     async def _execute(self, record: RequestRecord, principal: Principal, started: float,
-                       stages: list[StageTiming], *, idempotency_key: str | None, resume: bool = False) -> RequestRecord:
-        assert record.plan is not None
+                       stages: list[StageTiming], *, idempotency_key: str | None, resume: bool = False,
+                       request: PlanningRequest | None = None, allow_partial: bool = False) -> RequestRecord:
         prior = {r.task_id: r for r in record.report.task_results} if resume and record.report else None
+        report = await self._run(record, principal, stages, idempotency_key=idempotency_key, prior=prior)
+        runs = 1
+        if not resume and request is not None:
+            record, report, extra_runs = await self._replan(record, report, request, principal, stages,
+                                                            idempotency_key=idempotency_key, allow_partial=allow_partial)
+            runs += extra_runs
+        return self._finish(record, started, stages, state=_state_for(report), report=report,
+                            executions=record.executions + runs)
+
+    async def _run(self, record: RequestRecord, principal: Principal, stages: list[StageTiming], *,
+                   idempotency_key: str | None, prior: dict[str, Any] | None, label: str = "") -> ExecutionReport:
+        """Execute ``record.plan`` and resolve conflicts (stages 7-10)."""
+        assert record.plan is not None
         t = time.perf_counter()
         try:
             report = await self.scheduler.execute(
@@ -362,7 +380,7 @@ class Orchestrator:
                                                      "error": ErrorInfo(code="execution_cancelled",
                                                                         message="execution was interrupted")}))
             raise
-        stages.append(StageTiming(stage="execute", duration_ms=self._ms(t)))
+        stages.append(StageTiming(stage=f"execute{label}", duration_ms=self._ms(t)))
 
         t = time.perf_counter()
         report = self.resolver.resolve(record.plan, report)
@@ -372,9 +390,62 @@ class Orchestrator:
         )
         if routing_notes:
             report = report.model_copy(update={"uncertainty": (*routing_notes, *report.uncertainty)})
-        stages.append(StageTiming(stage="resolve", duration_ms=self._ms(t)))
-        return self._finish(record, started, stages, state=_state_for(report), report=report,
-                            executions=record.executions + 1)
+        stages.append(StageTiming(stage=f"resolve{label}", duration_ms=self._ms(t)))
+        return report
+
+    async def _replan(self, record: RequestRecord, report: ExecutionReport, request: PlanningRequest,
+                      principal: Principal, stages: list[StageTiming], *, idempotency_key: str | None,
+                      allow_partial: bool) -> tuple[RequestRecord, ExecutionReport, int]:
+        """Re-plan after plan-caused failures, at most ``max_replans`` times (see ``orchestrator.repair``).
+        Each new plan is routed, authorized and executed exactly like the first; steps the new plan
+        repeats unchanged reuse their earlier results."""
+        attempts: list[AttemptSummary] = []
+        notes: list[str] = []
+        runs = 0
+        for n in range(1, self.settings.max_replans + 1):
+            if not self.routing.supports_feedback or record.plan is None:
+                break
+            failed = repairable_failures(record.plan, report, self.registry)
+            if not failed:
+                break
+            attempts.append(AttemptSummary(
+                plan_id=record.plan.plan_id,
+                failed={r.task_id: f"{r.error.code}: {r.error.message}" for r in failed if r.error},
+            ))
+            self.audit.record("request.replanning", request_id=record.request_id, attempt=n,
+                              failed={r.task_id: r.error.code for r in failed if r.error})
+            t = time.perf_counter()
+            try:
+                outcome = await self.routing.plan_and_route(
+                    request, principal, allow_partial=allow_partial,
+                    feedback=build_feedback(record.plan, report, failed),
+                )
+            except OrchestratorError as exc:
+                stages.append(StageTiming(stage=f"replan_{n}", duration_ms=self._ms(t)))
+                notes.append(f"Re-planning after the failure did not succeed ({exc.code}: {exc.message}).")
+                self.audit.record("request.replan_failed", request_id=record.request_id, attempt=n, error=exc.code)
+                break
+            stages.append(StageTiming(stage=f"replan_{n}", duration_ms=self._ms(t)))
+            if outcome.routed.plan is None:
+                notes.append("Re-planning produced no runnable plan.")
+                break
+            prior = reusable_results(record.plan, report, outcome.routed.plan)
+            record = record.model_copy(update={
+                "plan": outcome.routed.plan,
+                "routing": outcome.routed.decisions,
+                "unrouted": outcome.routed.unrouted,
+                "unsupported": outcome.routed.unsupported,
+                "authorization": outcome.authorization,
+            })
+            report = await self._run(record, principal, stages, idempotency_key=idempotency_key,
+                                     prior=prior or None, label=f"_{n}")
+            runs += 1
+        if attempts:
+            failed_text = "; ".join(f"{tid} ({msg})" for a in attempts for tid, msg in a.failed.items())
+            notes.insert(0, f"The plan was revised {len(attempts)} time(s) after failures: {failed_text}.")
+            report = report.model_copy(update={"uncertainty": (*notes, *report.uncertainty)})
+            record = record.model_copy(update={"replans": tuple(attempts)})
+        return record, report, runs
 
     def _finish(self, record: RequestRecord, started: float, stages: list[StageTiming], *,
                 state: RequestState, **fields: Any) -> RequestRecord:

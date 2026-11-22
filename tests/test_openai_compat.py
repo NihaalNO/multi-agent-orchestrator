@@ -68,6 +68,7 @@ async def registry(tmp_path):
 @pytest.mark.parametrize(
     "profile,model,base_url,expected",
     [
+        (GROQ, "openai/gpt-oss-120b", GROQ.base_url, "json_schema"),
         (GROQ, "openai/gpt-oss-20b", GROQ.base_url, "json_schema"),
         (GROQ, "llama-3.3-70b-versatile", GROQ.base_url, "json_object"),  # Llama on Groq: JSON mode only
         (GROQ, "llama-3.1-8b-instant", GROQ.base_url, "json_object"),
@@ -85,7 +86,7 @@ async def test_groq_strict_schema_request_and_routing(registry):
     outcome = await RoutingService(registry, planner, permissive(registry)).plan_and_route(
         PlanningRequest(text="x", files=("sales.csv",)), TESTER)
     [call] = calls.calls
-    assert call["model"] == "openai/gpt-oss-20b"
+    assert call["model"] == "openai/gpt-oss-120b"
     assert call["response_format"] == {"type": "json_schema",
                                        "json_schema": {"name": "execution_plan", "schema": PLAN_SCHEMA, "strict": True}}
     assert call["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}  # shared prompt, unchanged
@@ -159,6 +160,7 @@ def _status(cls, code):
         (openai.APITimeoutError(request=_REQ), PlannerUnavailableError),
         (_status(openai.AuthenticationError, 401), ConfigurationError),
         (_status(openai.NotFoundError, 404), ConfigurationError),  # e.g. Ollama model not pulled
+        (_status(openai.APIStatusError, 413), ConfigurationError),  # e.g. over Groq's tokens-per-minute limit
         (_status(openai.BadRequestError, 400), PlanError),
     ],
 )
@@ -217,3 +219,98 @@ def test_check_config():
     assert not errs
     errs, warns = check_config(Settings(llm_provider="ollama", llm_model="llama3.3"), environ={})
     assert not errs and any("ollama pull llama3.3" in w for w in warns)
+
+
+async def test_explicit_output_budget_uses_each_providers_parameter(registry):
+    # Found in the first live Groq run: without an explicit budget, gpt-oss's hidden reasoning used
+    # up Groq's default limit and the plan was cut off ("max completion tokens reached").
+    for profile, param in ((GROQ, "max_completion_tokens"), (OLLAMA, "max_tokens")):
+        client, calls = fake_client(completion(json.dumps(PLAN)))
+        await OpenAICompatPlanner(profile, client).plan(PlanningRequest(text="x"), ToolCatalog.from_registry(registry))
+        call = calls.calls[0]
+        assert call[param] == 4096
+        other = {"max_completion_tokens", "max_tokens"} - {param}
+        assert not other & set(call)
+
+
+
+def test_output_budget_is_configurable(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    p = build_planner(Settings(llm_provider="groq", llm_api_key="gsk", llm_max_output_tokens=2048))
+    assert p._max_output_tokens == 2048
+
+
+# --- Dedicated `code` field (found in live runs: code inside inputs_json came back over-escaped or
+# crammed onto one line) -------------------------------------------------------------------------
+
+from orchestrator.routing.llm_common import parse_plan_output  # noqa: E402
+
+MULTILINE = "total = 0\nfor r in inputs['rows']:\n    total += float(r['Revenue'])\nresult = total / len(inputs['rows'])"
+
+
+def _code_task(code, inputs):
+    return {"task_id": "avg", "description": "avg", "capability": "data.compute", "tool_id": "python_exec",
+            "operation": "run", "inputs_json": json.dumps(inputs), "depends_on": [], "compare_group": "",
+            "code": code}
+
+
+def test_code_field_arrives_with_real_line_breaks():
+    text = json.dumps({"rationale": "", "unsupported": [], "tasks": [_code_task(MULTILINE, {"inputs": {"rows": []}})]})
+    task = parse_plan_output(text, PlanningRequest(text="x"), "groq").plan.tasks[0]
+    assert task.inputs == {"inputs": {"rows": []}, "code": MULTILINE}
+    compile(task.inputs["code"], "<task>", "exec")  # valid, multi-line Python
+
+
+def test_code_field_wins_and_old_style_still_works():
+    both = _code_task("result = 2", {"code": "result = 1", "inputs": {}})
+    old_style = {**_code_task("", {"code": "result = 1", "inputs": {}}), "task_id": "old"}
+    text = json.dumps({"rationale": "", "unsupported": [], "tasks": [both, old_style]})
+    tasks = parse_plan_output(text, PlanningRequest(text="x"), "groq").plan.tasks
+    assert tasks[0].inputs["code"] == "result = 2"
+    assert tasks[1].inputs["code"] == "result = 1"
+
+
+async def test_code_field_end_to_end_through_a_provider(registry):
+    plan = {"rationale": "", "unsupported": [], "tasks": [_code_task(MULTILINE, {"inputs": {"rows": []}})]}
+    client, calls = fake_client(completion(json.dumps(plan)))
+    outcome = await RoutingService(registry, OpenAICompatPlanner(GROQ, client), permissive(registry)).plan_and_route(
+        PlanningRequest(text="x"), TESTER)
+    assert outcome.routed.complete and outcome.routed.plan.task("avg").inputs["code"] == MULTILINE
+    schema = calls.calls[0]["response_format"]["json_schema"]["schema"]["properties"]["tasks"]["items"]
+    assert "code" in schema["required"]
+
+
+
+class FlakyCompletions:
+    """Fails with Groq's output-validation 400 a given number of times, then succeeds."""
+
+    def __init__(self, failures, response):
+        self.failures, self.response, self.calls = failures, response, 0
+
+    async def create(self, **kwargs):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise openai.BadRequestError(
+                "Error code: 400 - Failed to validate JSON. Please adjust your prompt.",
+                response=httpx2.Response(400, request=_REQ), body=None)
+        return self.response
+
+
+@pytest.mark.parametrize("failures,ok", [(1, True), (2, False)])
+async def test_output_validation_failure_is_retried_once(registry, failures, ok):
+    completions = FlakyCompletions(failures, completion(json.dumps(PLAN)))
+    planner = OpenAICompatPlanner(GROQ, NS(chat=NS(completions=completions)))
+    if ok:
+        proposal = await planner.plan(PlanningRequest(text="x"), ToolCatalog.from_registry(registry))
+        assert proposal.plan is not None
+    else:
+        with pytest.raises(PlanError, match="Failed to validate JSON"):
+            await planner.plan(PlanningRequest(text="x"), ToolCatalog.from_registry(registry))
+    assert completions.calls == min(failures + 1, 2)
+
+
+async def test_other_bad_requests_are_not_retried(registry):
+    client, calls = fake_client(error=_status(openai.BadRequestError, 400))
+    with pytest.raises(PlanError):
+        await OpenAICompatPlanner(GROQ, client).plan(PlanningRequest(text="x"), ToolCatalog.from_registry(registry))
+    assert len(calls.calls) == 1
