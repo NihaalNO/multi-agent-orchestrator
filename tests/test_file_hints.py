@@ -76,7 +76,7 @@ async def test_prompt_shows_header_but_no_data_values(setup):
     service, planner, _, _ = setup
     await service.plan_and_route(PlanningRequest(text="x", files=("users/alice/sales.csv",)), ALICE)
     message = user_message(planner.requests[0], ToolCatalog(entries=()))
-    assert "- users/alice/sales.csv (CSV columns: month, region, Revenue)" in message
+    assert "- users/alice/sales.csv (CSV columns: month, region, Revenue; every value is read as a string)" in message
     assert "120000" not in message and "north" not in message
 
 
@@ -96,3 +96,4 @@ def test_peek_columns_edge_cases(setup):
 def test_planning_rules_forbid_silent_defaults():
     assert "never substitute a default for a missing field" in SYSTEM_PROMPT
     assert "use those exact names" in SYSTEM_PROMPT
+    assert "every cell as a string" in SYSTEM_PROMPT and "float(" in SYSTEM_PROMPT

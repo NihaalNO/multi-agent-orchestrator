@@ -72,6 +72,7 @@ button:disabled { opacity: .55; cursor: default; }
 }
 .card h1 { margin: 0; font-size: 20px; }
 .card p { margin: 0; }
+.card code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; background: var(--code); border-radius: 4px; padding: 1px 4px; }
 input[type=password], textarea {
   font: inherit; color: var(--text); background: var(--bg);
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%;

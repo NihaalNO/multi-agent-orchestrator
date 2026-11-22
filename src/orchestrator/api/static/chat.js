@@ -64,6 +64,25 @@ function errorText(data, status) {
 
 // ------------------------------------------------------------------ sign in
 
+// Keys of LLM providers, recognised by their published prefixes. They are never sent anywhere:
+// the server holds its own provider key; users sign in with their orchestrator key.
+const PROVIDER_KEYS = [
+  [/^gsk_/, "Groq"],
+  [/^sk-ant-/, "Anthropic"],
+  [/^AIza/, "Google Gemini"],
+  [/^sk-(proj-)?[A-Za-z0-9_-]{20,}$/, "OpenAI"],
+];
+
+// Orchestrator keys (`hash-key --generate`, dev server) are secrets.token_urlsafe(32): exactly 43
+// URL-safe characters, a length no provider key above has. Never mistake one for a provider key.
+const ORCHESTRATOR_KEY = /^[A-Za-z0-9_-]{43}$/;
+
+function providerOf(key) {
+  if (ORCHESTRATOR_KEY.test(key)) return null;
+  for (const [pattern, name] of PROVIDER_KEYS) if (pattern.test(key)) return name;
+  return null;
+}
+
 async function signIn(key) {
   state.key = key;
   const res = await fetch("/me", { headers: { Authorization: `Bearer ${key}` } });
@@ -73,15 +92,28 @@ async function signIn(key) {
   $("who").textContent = `${state.me.user_id} · ${state.me.roles.join(", ") || "no roles"}`;
   $("who").hidden = $("signout").hidden = false;
   $("signin").hidden = true;
+  resetConversation();
   $("chat").hidden = false;
   autosize();
   $("text").focus();
   return true;
 }
 
+// A fresh, empty conversation. Called on every sign-in and sign-out, so nothing one user saw or
+// attached is left on the page for the next person using this tab.
+function resetConversation() {
+  state.attached = [];
+  $("chips").replaceChildren();
+  $("text").value = "";
+  const empty = $("empty-template").content.cloneNode(true);
+  for (const node of empty.querySelectorAll("[data-user]")) node.textContent = state.me ? state.me.user_id : "you";
+  $("log").replaceChildren(empty);
+}
+
 function signOut(message) {
   state.key = state.me = null;
   storeSet(null);
+  resetConversation();
   $("who").hidden = $("signout").hidden = true;
   $("chat").hidden = true;
   $("signin").hidden = false;
@@ -108,6 +140,19 @@ async function attach(file) {
 }
 
 // ------------------------------------------------------------------ messages
+
+// "Planning and running (12s)": LLM planning can take a while (provider rate limits, retries),
+// so show that the request is still alive. The timer stops when the bubble is replaced.
+function working(label) {
+  const node = el("span", { class: "thinking", text: label });
+  const started = Date.now();
+  const timer = setInterval(() => {
+    if (!node.isConnected) return clearInterval(timer);
+    const s = Math.round((Date.now() - started) / 1000);
+    if (s >= 3) node.textContent = `${label} (${s}s)`;
+  }, 1000);
+  return node;
+}
 
 function addMessage(kind, ...children) {
   $("empty")?.remove();
@@ -196,7 +241,9 @@ async function renderRecord(bubble, record, status) {
   bubble.append(statusBadge(record));
   const h = highlights(record);
   if (h) bubble.append(h);
-  if (record.summary) bubble.append(el("p", { class: "summary", text: record.summary }));
+  // The summary's first line ("Request <id>: <state>.") repeats the badge; keep the rest.
+  const summary = (record.summary || "").replace(/^Request \S+: [a-z_]+\.\n?/, "").trim();
+  if (summary) bubble.append(el("p", { class: "summary", text: summary }));
   else if (record.error) bubble.append(el("p", { class: "error", text: record.error.message || record.error.code }));
 
   const pending = Object.entries(record.pending_approvals || {});
@@ -215,7 +262,7 @@ async function renderRecord(bubble, record, status) {
 
 async function resume(requestId, button) {
   button.disabled = true;
-  const bubble = addMessage("agent", el("span", { class: "thinking", text: "Continuing" }));
+  const bubble = addMessage("agent", working("Continuing"));
   try {
     const { status, data } = await api("POST", `/requests/${encodeURIComponent(requestId)}/resume`);
     await renderRecord(bubble, data, status);
@@ -226,9 +273,12 @@ async function resume(requestId, button) {
 }
 
 async function send(text) {
+  // Attachments go with this message only, so later, unrelated messages don't carry them.
   const files = [...state.attached];
+  state.attached = [];
+  $("chips").replaceChildren();
   addMessage("user", text, files.length ? el("div", { class: "files", text: `Files: ${files.join(", ")}` }) : null);
-  const bubble = addMessage("agent", el("span", { class: "thinking", text: "Planning and running" }));
+  const bubble = addMessage("agent", working("Planning and running"));
   $("send").disabled = true;
   try {
     const { status, data } = await api("POST", "/requests", {
@@ -256,8 +306,18 @@ function autosize() {
 document.addEventListener("DOMContentLoaded", async () => {
   $("signin-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const ok = await signIn($("key").value.trim()).catch(() => false);
-    if (!ok) { $("signin-error").textContent = "That API key was not accepted."; $("signin-error").hidden = false; }
+    const key = $("key").value.trim();
+    const provider = providerOf(key);
+    let message = null;
+    if (provider) {
+      $("key").value = "";
+      message = `That looks like a ${provider} key. It was not sent anywhere. The server already has its own ` +
+        `${provider} key; sign in with your orchestrator API key instead (dev server: config/dev/api-key.txt).`;
+    } else if (!(await signIn(key).catch(() => false))) {
+      message = "That key was not accepted. Use the orchestrator API key issued for your user " +
+        "(dev server: config/dev/api-key.txt), not an LLM provider key.";
+    }
+    if (message) { $("signin-error").textContent = message; $("signin-error").hidden = false; }
   });
   $("signout").addEventListener("click", () => signOut());
   $("file").addEventListener("change", (ev) => { for (const f of ev.target.files) attach(f); ev.target.value = ""; });

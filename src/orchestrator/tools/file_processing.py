@@ -102,7 +102,7 @@ SPEC = ToolSpec(
         ),
         OperationSpec(
             name="read_csv",
-            description="Parse an uploaded CSV file into a header list and row objects.",
+            description="Parse an uploaded CSV file into a header list and row objects. Every cell is a string, including numbers; convert them before doing arithmetic.",
             capabilities=("file.read.csv", "data.tabular.load"),
             input_schema={
                 "type": "object",

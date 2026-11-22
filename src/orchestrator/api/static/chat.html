@@ -17,8 +17,10 @@
   <section id="signin" class="signin" hidden>
     <form id="signin-form" class="card">
       <h1>Sign in</h1>
-      <p class="muted">Paste your API key. It stays in this browser tab only and is cleared when the tab closes.</p>
-      <label for="key">API key</label>
+      <p class="muted">Paste your <strong>orchestrator</strong> API key: the key your administrator issued for your user
+        (on the dev server it is in <code>config/dev/api-key.txt</code>). Not a Groq, Anthropic or Gemini key; those stay on the server.</p>
+      <p class="muted">The key stays in this browser tab only and is cleared when the tab closes.</p>
+      <label for="key">Orchestrator API key</label>
       <input id="key" type="password" autocomplete="off" spellcheck="false" required>
       <p id="signin-error" class="error" role="alert" hidden></p>
       <button type="submit" class="primary">Sign in</button>
@@ -26,13 +28,15 @@
   </section>
 
   <main id="chat" class="chat" hidden>
-    <div id="log" class="log" aria-live="polite">
+    <div id="log" class="log" aria-live="polite"></div>
+    <template id="empty-template">
       <div class="empty" id="empty">
         <p>Ask for something in plain English, for example:</p>
-        <p class="example">Read users/&lt;you&gt;/sales.csv and calculate its average revenue using Python</p>
-        <p class="muted">Attach a CSV or text file with the paperclip; it is uploaded to your own folder.</p>
+        <p class="example">Read users/<span data-user>you</span>/sales.csv and calculate its average revenue using Python</p>
+        <p class="muted">Attach a CSV or text file with the paperclip; it is uploaded to your own folder and sent with your next message.</p>
+        <p class="muted">Each message is handled on its own; mention the file or value again in follow-ups.</p>
       </div>
-    </div>
+    </template>
 
     <form id="composer" class="composer">
       <div id="chips" class="chips"></div>
