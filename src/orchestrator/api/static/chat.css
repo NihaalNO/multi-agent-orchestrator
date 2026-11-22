@@ -96,6 +96,11 @@ input[type=password], textarea {
 .answer .label { color: var(--muted); font-size: 13px; }
 .answer .value { font-size: 18px; font-weight: 600; }
 .summary { white-space: pre-wrap; margin: 8px 0 0; font-size: 14px; }
+.sources { margin: 2px 0 4px; padding-left: 22px; display: grid; gap: 8px; font-size: 14px; }
+.sources a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.sources a:hover { text-decoration: underline; }
+.sources .meta { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.sources q { display: block; color: var(--muted); margin-top: 2px; quotes: "“" "”"; }
 details { margin-top: 8px; }
 summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 .step { border-top: 1px solid var(--line); padding: 8px 0; font-size: 14px; }

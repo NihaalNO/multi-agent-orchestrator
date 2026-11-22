@@ -169,3 +169,14 @@ def test_chat_ui_clears_the_conversation_between_users_and_messages():
     assert "resetConversation()" in sign_out           # nothing left on screen for the next user
     send = js[js.index("async function send"):]
     assert send.index("state.attached = []") < send.index('api("POST", "/requests"')  # files go with one message
+
+
+def test_chat_ui_links_only_web_addresses():
+    from pathlib import Path
+
+    import orchestrator.api.app as app_module
+
+    js = (Path(app_module.__file__).parent / "static" / "chat.js").read_text(encoding="utf-8")
+    safe = js[js.index("function safeUrl"):js.index("function sources")]
+    assert '"https:"' in safe and '"http:"' in safe
+    assert 'rel: "noopener noreferrer"' in js and "const href = safeUrl(s.url)" in js

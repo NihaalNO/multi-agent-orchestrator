@@ -225,9 +225,10 @@ Every provider receives **the same prompt and output schema**, and its output go
 | `none` *(default)* | no web search tool | requests needing search are answered partly, with a caveat |
 | `anthropic` | Claude's server-side web search | snippets are **quotes from the page**; results carry dates when available |
 | `gemini` | Gemini with Google Search grounding | snippets are the **model's sentence** attributed to a source (a summary, not a quote); no dates |
+| `tavily` | Tavily's search API (`TAVILY_API_KEY`, from [app.tavily.com](https://app.tavily.com/)) | snippets are **quotes from the page**; dates when available; one HTTPS call, no model involved; 1 credit per search (`ORCH_TAVILY_SEARCH_DEPTH=advanced`: 2) |
 
-In both live backends, titles and URLs come from the API's own metadata — a model cannot invent a
-source.
+In every live backend, titles and URLs come from the API's own metadata — a model cannot invent a
+source. Tavily works with any planner, so it is the way to get web search with Groq or Ollama.
 
 ---
 
@@ -288,9 +289,13 @@ approving "delete record 5" cannot be reused for "delete record 6".
   symlink escapes.
 - Uploads have their own permission (`tool_id: "uploads"`), so a plan can never write or delete
   files.
-- **The Python tool is not a security sandbox.** It runs code in a separate process with a time
-  limit, a temporary folder and no inherited secrets, but that code can still read what the
-  service account can read and use the network. Grant `python_exec` only to trusted users.
+- **Python runs in a WebAssembly sandbox.** CPython compiled for WASI runs inside wasmtime: no
+  host files except a read-only standard library and an empty scratch folder, no network, no
+  environment variables, a memory cap (`ORCH_PYTHON_MEMORY_MB`) and a time limit enforced by the
+  runtime. Only the standard library is available. Fetch the build once with
+  `python scripts/fetch_python_wasm.py` (SHA-256 checked); the Docker image includes it and sets
+  `ORCH_PYTHON_SANDBOX=wasm`. Without it, `auto` falls back to a plain subprocess — not a security
+  boundary — and says so at startup.
 
 The full checklist is in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#security-checklist).
 
@@ -368,7 +373,7 @@ push.
 | Setting | Default | Purpose |
 |---|---|---|
 | `ORCH_LLM_PROVIDER` / `ORCH_LLM_MODEL` | `anthropic` / provider default | which planner and model |
-| `ORCH_SEARCH_BACKEND` | `none` | `anthropic`, `gemini` or `none` |
+| `ORCH_SEARCH_BACKEND` | `none` | `anthropic`, `gemini`, `tavily` or `none` |
 | `ORCH_POLICY_PATH` / `ORCH_PRINCIPALS_PATH` | unset | grants and API keys (unset = deny all / nobody logs in) |
 | `ORCH_STATE_PATH` | unset | SQLite file for durable state (unset = in memory) |
 | `ORCH_FILE_TOOL_ROOT` | `data/uploads` | the only folder files are read from and uploaded to |
@@ -390,6 +395,8 @@ client over the same endpoints shown below:
 - attach a file with the paperclip — it is uploaded to `users/<your id>/` and listed with the request;
 - each reply shows the key results, the summary with its caveats, and the individual steps (plan,
   outputs, errors) behind a "Steps" toggle;
+- web search results appear as a numbered list of sources: linked title, site, date and the quoted
+  snippet (only `http(s)` addresses become links);
 - if a step needs approval, approvers get Approve / Deny buttons and then **Continue** resumes the request.
 
 The key is kept in the tab's `sessionStorage` only (cleared when the tab closes). The page is served
@@ -643,7 +650,8 @@ Be aware of:
   follow-ups.
 - **One server instance.** Durable state is a local SQLite file; running several servers needs a
   shared database and distributed locks.
-- **Python is not sandboxed.** Use it only with trusted users until container isolation is added.
+- **Sandboxed Python has the standard library only** (no numpy or pandas), and each run starts a
+  fresh WebAssembly instance (about 0.2–1 s).
 - **Metrics reset on restart** (the audit log, if configured, is durable).
 - **No license file yet** — the default copyright rules apply until one is added.
 

@@ -88,6 +88,17 @@ def check_config(settings: Settings, environ: dict[str, str] | None = None) -> t
         except ConfigurationError as exc:
             errors.append(f"principals: {exc.message}")
 
+    from orchestrator.tools.wasm_python import wasm_unavailable_reason
+
+    if settings.python_sandbox != "subprocess":
+        reason = wasm_unavailable_reason(settings.python_wasm_dir)
+        if reason and settings.python_sandbox == "wasm":
+            errors.append(f"ORCH_PYTHON_SANDBOX=wasm but the sandbox is unavailable: {reason}")
+        elif reason:
+            warnings.append(f"python_exec will run in a plain subprocess (not a security sandbox): {reason}")
+    else:
+        warnings.append("ORCH_PYTHON_SANDBOX=subprocess: python_exec is not sandboxed; grant it only to trusted users.")
+
     if settings.state_path is None:
         warnings.append("ORCH_STATE_PATH is not set: requests, approvals and duplicate protection are kept in "
                         "memory and lost on restart.")
@@ -164,6 +175,11 @@ def check_config(settings: Settings, environ: dict[str, str] | None = None) -> t
         if not has_key("gemini"):
             errors.append(f"{' and '.join(gemini_uses)} use Gemini but no key is set: "
                           "set GEMINI_API_KEY (or GOOGLE_API_KEY)")
+    if settings.search_backend == "tavily":
+        from orchestrator.tools.tavily_search import KEY_ENV, tavily_key
+
+        if not tavily_key(env):
+            errors.append(f"search backend is 'tavily' but no key is set: set {KEY_ENV} (from https://app.tavily.com/)")
     if settings.search_backend == "none":
         warnings.append("ORCH_SEARCH_BACKEND is 'none': no web search tool is registered, so requests that need "
                         "web search are only partly answered (or rejected).")

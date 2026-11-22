@@ -131,3 +131,8 @@ class WebSearchTool(ToolAdapter):
 
     async def health_check(self) -> bool:
         return await self._backend.health_check()
+
+    async def aclose(self) -> None:
+        close = getattr(self._backend, "aclose", None)
+        if close is not None:
+            await close()
