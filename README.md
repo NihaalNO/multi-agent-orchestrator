@@ -4,16 +4,35 @@ A permission-aware orchestrator that discovers tools at runtime, routes tasks by
 executes independent work concurrently, and reconciles the results. The LLM proposes plans;
 deterministic Python validates, authorizes and executes them.
 
-- Specification: [docs/SPEC.md](docs/SPEC.md)
-- Architecture & contracts: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- Roadmap & requirement status: [docs/ROADMAP.md](docs/ROADMAP.md)
+| Document | For |
+|---|---|
+| [docs/SPEC.md](docs/SPEC.md) | the original project specification |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | components, data contracts and design decisions |
+| [docs/API.md](docs/API.md) | HTTP endpoints, status codes, the request record |
+| [docs/TOOLS.md](docs/TOOLS.md) | writing and registering a new tool |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | configuration, Docker, monitoring, security checklist |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | what is done, partial and still open |
+
+## Try it in 30 seconds
+
+No API key or network needed:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -e ".[dev]"
+.\.venv\Scripts\python examples\mvp_demo.py
+```
+
+This runs the spec's MVP request (read a CSV, average its revenue with Python, search for
+benchmarks) through the whole pipeline and prints the summary. `examples/custom_tool.py` adds a tool
+at runtime; `examples/approval_workflow.py` walks through a sensitive operation's approval. With an
+Anthropic API key set, `examples\mvp_demo.py --planner anthropic` lets Claude do the planning.
 
 ## Status
 
-Phases 01–07 are complete: the full request lifecycle runs behind `POST /requests`, and all ten
-essential test scenarios from the spec pass. Still open: a live web-search backend, a live run of
-the Claude planner (needs an API key), and Phase 08 (documentation and deployment). See the
-roadmap for details.
+All eight phases are complete and all ten essential test scenarios from the spec pass. Before a
+production rollout: a first live run of the Claude planner, a live web-search backend, and a first
+CI run of the Docker image. See the roadmap's overall status.
 
 ## Planner configuration
 
@@ -48,10 +67,11 @@ Copy-Item config\policy.example.json config\policy.json; Copy-Item config\princi
   such as `file:reports/*`, `effect: "deny"` to carve out exceptions, and `allow_sensitive` to let
   sensitive operations be *requested* (they still need an approver).
 - `config/principals.json` maps users to roles and to the **SHA-256 hash** of their API key. The
-  example hashes are placeholders that match no key. Hash a key without echoing it:
+  example hashes are placeholders that match no key. Create a key and its hash (the key is shown
+  once; `hash-key` without `--generate` hashes an existing key at a hidden prompt):
 
 ```powershell
-.\.venv\Scripts\python -c "import hashlib,getpass; print(hashlib.sha256(getpass.getpass('API key: ').encode()).hexdigest())"
+.\.venv\Scripts\python -m orchestrator hash-key --generate
 ```
 
 Roles with special meaning: `admin` (enable/disable tools, health checks) and `approver` (approve
@@ -61,7 +81,7 @@ configurable (`ORCH_ADMIN_ROLE`, `ORCH_APPROVER_ROLE`).
 Run the API:
 
 ```powershell
-$env:ORCH_POLICY_PATH = "config\policy.json"; $env:ORCH_PRINCIPALS_PATH = "config\principals.json"; .\.venv\Scripts\python -m uvicorn orchestrator.api:create_app --factory --reload
+$env:ORCH_POLICY_PATH = "config\policy.json"; $env:ORCH_PRINCIPALS_PATH = "config\principals.json"; .\.venv\Scripts\python -m orchestrator check-config; .\.venv\Scripts\python -m orchestrator serve
 ```
 
 Clients send `Authorization: Bearer <api key>`. `/health` is the only public endpoint.

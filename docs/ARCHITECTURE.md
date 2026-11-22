@@ -267,6 +267,11 @@ src/orchestrator/
   core.py                   Orchestrator facade, request store        (Phase 07)
   observability/metrics.py  latency/reliability metrics from audit events
   api/app.py                FastAPI application
-tests/                      pytest, mirrors src layout
-docs/                       SPEC, ARCHITECTURE, ROADMAP
+  __main__.py               CLI: serve, hash-key, check-config        (Phase 08)
+  observability/logging.py  JSON logging to stdout                    (Phase 08)
+tests/                      pytest, mirrors src layout; docs/CLI/example checks
+examples/                   runnable workflows (MVP, custom tool, approvals)
+config/                     example policy and principals
+docs/                       SPEC, ARCHITECTURE, ROADMAP, API, TOOLS, DEPLOYMENT
+Dockerfile, docker-compose.yml, requirements.lock, .github/workflows/ci.yml
 ```

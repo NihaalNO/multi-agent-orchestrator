@@ -5,6 +5,24 @@ Status legend: ✅ done · 🟡 partial · ⬜ not started · ⛔ blocked (see n
 This file is the record of completed, incomplete and blocked requirements required by
 spec §13.12. Update it in the same commit as the work it describes.
 
+## Overall status
+
+All eight phases are delivered. Every foundational capability (registry, routing, permissions,
+parallel execution, conflict resolution) has independently tested code, and they work together
+end to end (spec §13 completion standard): the MVP request runs through `POST /requests`, and all
+ten essential test scenarios pass.
+
+Remaining before a production rollout:
+
+| Item | State | Needs |
+|---|---|---|
+| Live run of the Claude planner | ⛔ | an Anthropic API key, then `python examples/mvp_demo.py --planner anthropic` |
+| Live web-search backend | ⛔ | a decision: keyed search API or Anthropic's server-side web search |
+| Docker image and CI first run | 🟡 | push to GitHub; the CI workflow builds and tests both |
+| Persistent requests/approvals/idempotency (multi-instance) | ⬜ | a database + distributed lock, when one instance is no longer enough |
+| Stronger Python isolation | ⬜ | container execution, if untrusted users get `python_exec` |
+| File upload endpoint, LLM-written summaries, OpenTelemetry export | ⬜ | optional extensions (spec §11) |
+
 ---
 
 ## Phase 01 — Foundation and Architecture  ✅
@@ -121,9 +139,21 @@ spec §13.12. Update it in the same commit as the work it describes.
 | File upload endpoint | ⬜ | files are placed in `ORCH_FILE_TOOL_ROOT` out of band |
 | Persistent request store | ⬜ | in-memory: records are lost on restart |
 
-## Phase 08 — Documentation and Deployment  ⬜
+## Phase 08 — Documentation and Deployment  ✅
 
-- ⬜ Tool-authoring guide, API reference, example workflows, deployment config
+| Item | Status | Where |
+|---|---|---|
+| Architecture documented | ✅ | `docs/ARCHITECTURE.md` |
+| Tool registration documented | ✅ | `docs/TOOLS.md` |
+| API endpoints documented | ✅ | `docs/API.md` (+ live OpenAPI at `/docs`) |
+| Deployment configuration | ✅ | `Dockerfile`, `docker-compose.yml`, `.env.example`, `requirements.lock`, `docs/DEPLOYMENT.md` |
+| Docker image built and smoke-tested | 🟡 | defined, but Docker was unavailable locally; the CI `docker` job builds and probes it — not yet run |
+| CLI: `serve`, `hash-key`, `check-config` | ✅ | `python -m orchestrator` |
+| Example workflows | ✅ | `examples/mvp_demo.py`, `custom_tool.py`, `approval_workflow.py` (all run in tests) |
+| Monitoring and logging | ✅ | JSON logs to stdout, optional audit mirroring, `/admin/metrics`, health check |
+| CI | 🟡 | `.github/workflows/ci.yml` (Linux 3.11 + 3.14, Windows 3.14, Docker) — not yet run on GitHub |
+| Docs kept in sync with code | ✅ | `tests/test_docs_and_cli.py` fails if a setting or route is undocumented, a documented setting no longer exists, or a doc link breaks |
+| Minimum Python version verified | ✅ | full suite passes on 3.11 (installed from `requirements.lock`) and 3.14 |
 
 ---
 

@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from orchestrator.core import Orchestrator, RequestRecord, RequestState, register_default_tools
-from orchestrator.observability import InMemoryAuditSink, JsonlAuditSink, MetricsSink
+from orchestrator.observability import InMemoryAuditSink, JsonlAuditSink, LoggingAuditSink, MetricsSink
 
 from orchestrator import __version__
 from orchestrator.api.auth import ApiKeyAuthenticator
@@ -126,6 +126,8 @@ def create_app(
         sinks = [InMemoryAuditSink(), metrics]
         if settings.audit_log_path:
             sinks.append(JsonlAuditSink(settings.audit_log_path))
+        if settings.audit_to_log:
+            sinks.append(LoggingAuditSink())
         audit = AuditLog(*sinks)
     if register_defaults is None:
         register_defaults = registry is None

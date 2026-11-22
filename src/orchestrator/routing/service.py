@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict
 
 from orchestrator.config import Settings
 from orchestrator.contracts import PlanningRequest, PlanProposal, Principal, RoutedPlan
-from orchestrator.errors import ConfigurationError, PermissionDeniedError
+from orchestrator.errors import ConfigurationError, NoMatchingToolError, PermissionDeniedError
 from orchestrator.observability.audit import AuditLog
 from orchestrator.permissions.manager import PermissionManager, PlanAuthorization
 from orchestrator.registry.registry import ToolRegistry
@@ -79,7 +79,18 @@ class RoutingService:
         router = CapabilityRouter(
             self._registry, self._audit, candidate_filter=self._permissions.candidate_filter(principal)
         )
-        routed = router.route(proposal, allow_partial=allow_partial)
+        try:
+            routed = router.route(proposal, allow_partial=allow_partial)
+        except NoMatchingToolError as exc:
+            # Tools this principal may not use were hidden from the planner. Say that the gap may
+            # be a permissions one, without revealing which tools exist.
+            restricted = len(catalog.entries) < len(ToolCatalog.from_registry(self._registry).entries)
+            if not restricted:
+                raise
+            raise NoMatchingToolError(
+                "no available tool that you are permitted to use can handle part of this request",
+                details={**exc.details, "restricted": True},
+            ) from exc
         authorization = self._permissions.authorize_plan(principal, routed, request_id=request.request_id)
         if not authorization.allowed:
             # Defence in depth: the router's filter should already have prevented this.

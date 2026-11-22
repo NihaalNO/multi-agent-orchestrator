@@ -1,0 +1,18 @@
+# Local / single-host deployment. Copy .env.example to .env and config/*.example.json to
+# config/policy.json and config/principals.json first (see docs/DEPLOYMENT.md).
+services:
+  orchestrator:
+    build: .
+    image: multi-tool-orchestrator:latest
+    env_file: .env
+    ports:
+      # Bound to localhost only. Put a TLS-terminating reverse proxy in front to expose it.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+    restart: unless-stopped
+    # The orchestrator keeps requests, approvals and idempotency state in memory:
+    # run exactly one replica (see docs/DEPLOYMENT.md, "Scaling").
+    deploy:
+      replicas: 1

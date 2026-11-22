@@ -24,7 +24,6 @@ class Settings(BaseModel):
 
     # Execution limits
     max_concurrency: int = Field(default=8, ge=1, le=256)
-    default_tool_timeout_s: float = Field(default=30.0, gt=0, le=600)
     max_retries_cap: int = Field(
         default=3, ge=0, le=10, description="Hard ceiling applied over any tool's own retry setting."
     )
@@ -55,6 +54,8 @@ class Settings(BaseModel):
 
     # Observability
     audit_log_path: Path | None = None
+    audit_to_log: bool = Field(default=False, description="Also write audit events to the application log.")
+    log_level: Literal["debug", "info", "warning", "error"] = "info"
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
