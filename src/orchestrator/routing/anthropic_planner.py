@@ -39,6 +39,7 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 class AnthropicPlanner:
     name = "anthropic"
+    supports_feedback = True
 
     def __init__(
         self,
@@ -57,7 +58,7 @@ class AnthropicPlanner:
         self._max_tokens = max_tokens
         self._audit = audit or AuditLog()
 
-    async def plan(self, request: PlanningRequest, catalog: ToolCatalog) -> PlanProposal:
+    async def plan(self, request: PlanningRequest, catalog: ToolCatalog, feedback: str | None = None) -> PlanProposal:
         if not catalog.entries:
             return no_tools_proposal(request, self.name)
         try:
@@ -67,7 +68,7 @@ class AnthropicPlanner:
                 betas=[FALLBACK_BETA],
                 fallbacks="default",
                 system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message(request, catalog)}],
+                messages=[{"role": "user", "content": user_message(request, catalog, feedback)}],
                 output_config={
                     "effort": self._effort,
                     "format": {"type": "json_schema", "schema": PLAN_SCHEMA},

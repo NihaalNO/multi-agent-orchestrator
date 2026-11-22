@@ -149,3 +149,109 @@ async def test_web_search_static_backend():
     assert [r["url"] for r in out["results"]] == ["https://example.com/a"]
     assert out["backend"] == "static"
     registry.validate_output("web_search", "search", out)
+
+
+# --- Python execution on event loops without subprocess support ------------------------------------
+# uvicorn uses asyncio.SelectorEventLoop on Windows with --reload or several workers; it cannot spawn
+# subprocesses there (NotImplementedError). Found in the first live run.
+
+
+def test_python_runs_inside_a_selector_event_loop():
+    import asyncio as aio
+
+    async def go():
+        return await PythonExecTool(timeout_s=10).invoke("run", {"code": "result = inputs['x'] * 2", "inputs": {"x": 21}}, CTX)
+
+    with aio.Runner(loop_factory=aio.SelectorEventLoop) as runner:
+        assert runner.run(go())["result"] == 42
+
+
+@pytest.fixture
+def no_async_subprocess(monkeypatch):
+    async def unsupported(*a, **k):
+        raise NotImplementedError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unsupported)
+
+
+async def test_threaded_fallback_runs_code(no_async_subprocess):
+    out = await PythonExecTool(timeout_s=10).invoke("run", {"code": "print('hi')\nresult = sum(inputs)", "inputs": [1, 2, 3]}, CTX)
+    assert out == {"result": 6, "stdout": "hi\n"}
+
+
+async def test_threaded_fallback_timeout(no_async_subprocess):
+    with pytest.raises(ToolExecutionError, match="time limit") as exc:
+        await PythonExecTool(timeout_s=0.5).invoke("run", {"code": "while True: pass"}, CTX)
+    assert exc.value.details["reason"] == "timeout"
+
+
+async def test_threaded_fallback_cancellation_kills_child(no_async_subprocess, tmp_path):
+    from test_execution import _pid_alive
+
+    pid_file = tmp_path / "pid.txt"
+    code = "import os, time\nopen(inputs, 'w').write(str(os.getpid()))\nwhile True: time.sleep(0.05)"
+    task = asyncio.create_task(PythonExecTool(timeout_s=30).invoke("run", {"code": code, "inputs": str(pid_file)}, CTX))
+    for _ in range(100):
+        if pid_file.exists() and pid_file.read_text():
+            break
+        await asyncio.sleep(0.05)
+    pid = int(pid_file.read_text())
+    assert _pid_alive(pid)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not _pid_alive(pid)
+
+
+
+# --- Over-escaped code from LLM planners (found in the first live Groq run) -------------------------
+
+from orchestrator.tools.python_exec import SPEC as PY_SPEC, repair_escaped_code  # noqa: E402
+
+
+def test_over_escaped_code_is_repaired():
+    broken = "rows = inputs['rows']\\nvalues = [float(r['v']) for r in rows]\\nresult = sum(values)"
+    fixed = repair_escaped_code(broken)
+    assert fixed == "rows = inputs['rows']\nvalues = [float(r['v']) for r in rows]\nresult = sum(values)"
+
+
+@pytest.mark.parametrize("code", [
+    "result = 'a\\nb'",                      # valid one-liner with \\n inside a string literal
+    "x = 1\nresult = 'line\\n'",            # real newlines present: left alone
+    "result = (",                             # genuinely broken, nothing to repair
+    "def f(:\\n    pass",                     # repair would still not compile: left alone
+])
+def test_valid_or_unrepairable_code_is_untouched(code):
+    assert repair_escaped_code(code) == code
+
+
+async def test_over_escaped_code_runs():
+    code = "values = [float(r['Revenue']) for r in inputs['rows']]\\nresult = sum(values) / len(values)"
+    out = await PythonExecTool(timeout_s=10).invoke(
+        "run", {"code": code, "inputs": {"rows": [{"Revenue": "100"}, {"Revenue": "300"}]}}, CTX)
+    assert out["result"] == 200.0
+
+
+def test_python_inputs_must_be_an_object():
+    from jsonschema import Draft202012Validator
+
+    v = Draft202012Validator(PY_SPEC.operation("run").input_schema)
+    assert v.is_valid({"code": "result = 1", "inputs": {"rows": []}})
+    assert not v.is_valid({"code": "result = 1", "inputs": [{"a": 1}]})
+
+
+
+@pytest.mark.parametrize("broken,expected_result", [
+    # seen live from Groq: every line after the first shifted by one space
+    ("rows = inputs['rows']\n total = 0.0\n for r in rows:\n     total += float(r['v'])\n result = total", 3.0),
+    # every line shifted by the same amount
+    ("    x = 1\n    result = x + 2", 3),
+])
+async def test_uniformly_misindented_code_is_repaired(broken, expected_result):
+    out = await PythonExecTool(timeout_s=10).invoke("run", {"code": broken, "inputs": {"rows": [{"v": "1"}, {"v": "2"}]}}, CTX)
+    assert out["result"] == expected_result
+
+
+def test_genuinely_wrong_indentation_is_left_alone():
+    code = "if True:\nresult = 1"  # missing indentation: no mechanical fix, keep the real error
+    assert repair_escaped_code(code) == code

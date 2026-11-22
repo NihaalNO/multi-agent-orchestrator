@@ -50,6 +50,9 @@ class ProviderProfile:
     strict: bool = False
     # Base-URL prefixes (e.g. a hosted variant) that only support JSON mode.
     json_object_only_urls: tuple[str, ...] = ()
+    # Name of the output-limit parameter. Reasoning models (e.g. gpt-oss) spend part of it on
+    # hidden reasoning, so provider defaults can cut a plan off before the JSON is finished.
+    max_tokens_param: str = "max_completion_tokens"
     notes: Mapping[str, str] = field(default_factory=dict)
 
     def json_mode(self, model: str, base_url: str) -> JsonMode:
@@ -76,7 +79,7 @@ PROVIDERS: dict[str, ProviderProfile] = {
         name="groq",
         label="Groq",
         base_url="https://api.groq.com/openai/v1",
-        default_model="openai/gpt-oss-20b",
+        default_model="openai/gpt-oss-120b",
         key_env=("GROQ_API_KEY",),
         # Groq enforces strict schemas only on these; everything else (incl. Llama) gets JSON mode.
         schema_models=frozenset({"openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b",
@@ -91,6 +94,7 @@ PROVIDERS: dict[str, ProviderProfile] = {
         key_env=("OLLAMA_API_KEY",),  # only Ollama's cloud needs one
         key_required=False,
         placeholder_key="ollama",     # local Ollama: "required but ignored"
+        max_tokens_param="max_tokens",  # what Ollama's OpenAI-compatible endpoint documents
         schema_models=None,           # local Ollama constrains output for any model
         json_object_only_urls=("https://ollama.com",),  # Ollama's cloud: no structured outputs
     ),
@@ -104,6 +108,10 @@ def openai_compat_error(exc: BaseException) -> tuple[Literal["config", "unavaila
         return "config", f"credentials rejected: {exc.message}"
     if isinstance(exc, openai.NotFoundError):
         return "config", f"model or endpoint not found (is the model pulled / the name right?): {exc.message}"
+    if isinstance(exc, openai.APIStatusError) and exc.status_code == 413:
+        # e.g. Groq: prompt + output budget exceed the account's tokens-per-minute limit. Retrying
+        # cannot help; lower ORCH_LLM_MAX_OUTPUT_TOKENS or use a higher tier.
+        return "config", f"request too large for this account's limits (lower ORCH_LLM_MAX_OUTPUT_TOKENS): {exc.message}"
     if isinstance(exc, openai.RateLimitError):
         return "unavailable", "rate limit reached"
     if isinstance(exc, openai.APIStatusError):
@@ -128,6 +136,8 @@ def make_openai_compat_client(profile: ProviderProfile, *, api_key: str | None =
 
 
 class OpenAICompatPlanner:
+    supports_feedback = True
+
     def __init__(
         self,
         profile: ProviderProfile,
@@ -137,6 +147,7 @@ class OpenAICompatPlanner:
         base_url: str | None = None,
         json_mode: JsonMode | None = None,
         timeout_s: float = 120.0,
+        max_output_tokens: int = 4096,
         audit: AuditLog | None = None,
     ) -> None:
         self._profile = profile
@@ -144,6 +155,7 @@ class OpenAICompatPlanner:
         self._model = model or profile.default_model
         self._json_mode: JsonMode = json_mode or profile.json_mode(self._model, base_url or profile.base_url)
         self._timeout = timeout_s
+        self._max_output_tokens = max_output_tokens
         self._audit = audit or AuditLog()
 
     @property
@@ -154,7 +166,7 @@ class OpenAICompatPlanner:
     def json_mode(self) -> JsonMode:
         return self._json_mode
 
-    def _request(self, request: PlanningRequest, catalog: ToolCatalog) -> dict[str, Any]:
+    def _request(self, request: PlanningRequest, catalog: ToolCatalog, feedback: str | None = None) -> dict[str, Any]:
         system = SYSTEM_PROMPT
         if self._json_mode == "json_schema":
             schema: dict[str, Any] = {"name": "execution_plan", "schema": PLAN_SCHEMA}
@@ -169,17 +181,32 @@ class OpenAICompatPlanner:
         return {
             "model": self._model,
             "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": user_message(request, catalog)}],
+                         {"role": "user", "content": user_message(request, catalog, feedback)}],
             "response_format": response_format,
             "timeout": self._timeout,
+            self._profile.max_tokens_param: self._max_output_tokens,
         }
 
-    async def plan(self, request: PlanningRequest, catalog: ToolCatalog) -> PlanProposal:
+    async def _create_with_retry(self, kwargs: dict[str, Any]) -> Any:
+        """One retry when the provider rejects its *own* output for not matching the schema (Groq:
+        400 "Failed to validate JSON"). Generation is not deterministic, so a second attempt often
+        succeeds; other errors are not retried here (the SDK already retries transient ones)."""
+        import openai
+
+        try:
+            return await self._client.chat.completions.create(**kwargs)
+        except openai.BadRequestError as exc:
+            if "failed to validate json" not in str(exc.message).lower():
+                raise
+            self._audit.record("planner.retry", provider=self.name, reason="output failed schema validation")
+            return await self._client.chat.completions.create(**kwargs)
+
+    async def plan(self, request: PlanningRequest, catalog: ToolCatalog, feedback: str | None = None) -> PlanProposal:
         if not catalog.entries:
             return no_tools_proposal(request, self.name)
         label = self._profile.label
         try:
-            completion = await self._client.chat.completions.create(**self._request(request, catalog))
+            completion = await self._create_with_retry(self._request(request, catalog, feedback))
         except Exception as exc:
             classified = openai_compat_error(exc)
             if classified is None:

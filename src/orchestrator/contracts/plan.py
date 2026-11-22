@@ -168,6 +168,11 @@ class PlanningRequest(BaseModel):
     request_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     text: str = Field(min_length=1, max_length=20_000)
     files: tuple[str, ...] = Field(default=(), description="Uploaded file paths the request may refer to.")
+    file_columns: dict[str, tuple[str, ...]] = Field(
+        default_factory=dict,
+        description="Column names of CSV files the request refers to (header only, no data), added by "
+                    "the orchestrator for files the user may read.",
+    )
 
 
 class PlanProposal(BaseModel):

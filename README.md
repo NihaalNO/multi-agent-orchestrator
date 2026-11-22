@@ -206,7 +206,7 @@ Every provider receives **the same prompt and output schema**, and its output go
 |---|---|---|---|
 | Anthropic Claude *(default)* | `anthropic` | `claude-opus-5-5` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `ant auth login` |
 | Google Gemini | `gemini` | `gemini-3.8-flash` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) |
-| Groq | `groq` | `openai/gpt-oss-20b` | `GROQ_API_KEY` |
+| Groq | `groq` | `openai/gpt-oss-120b` | `GROQ_API_KEY` |
 | Ollama | `ollama` | `gpt-oss:20b` | none locally; `OLLAMA_API_KEY` for Ollama's cloud |
 | Offline | `rule_based` | — | none (keyword rules; good for tests and demos) |
 
@@ -374,7 +374,7 @@ push.
 | `ORCH_MAX_CONCURRENCY` | `8` | tool calls running at once |
 | `ORCH_AUDIT_LOG_PATH` | unset | write the audit trail to a JSON-lines file |
 
-All 30 settings are documented in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#configuration).
+All 32 settings are documented in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#configuration).
 
 ---
 
@@ -477,6 +477,12 @@ supports.
 - **Timeouts and retries** — only errors marked temporary are retried, with growing waits and a
   global cap. Operations that change data are **never retried after a timeout**, because the
   first attempt may already have taken effect.
+- **Re-planning on plan errors** — a planner writes its plan before any data is read, so it can guess
+  wrong (a column name, an output field). When read or compute steps fail for such a reason, the
+  planner is shown the errors and the *shape* of the results (column names, types — not the data)
+  and its corrected plan is routed, authorized and run; unchanged steps are reused. Bounded by
+  `ORCH_MAX_REPLANS` (default 1), never used for writes, permissions or approvals, and always
+  reported in the result.
 - **Partial failure** — if a step fails, everything depending on it is skipped and independent work
   continues.
 - **Duplicate protection** — the same `Idempotency-Key` returns the original request; data-changing

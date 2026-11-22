@@ -50,6 +50,16 @@ class Settings(BaseModel):
     llm_provider: str = "anthropic"
     llm_model: str | None = Field(default=None, description="Planner model; unset → provider default.")
     llm_base_url: str | None = Field(default=None, description="Groq/Ollama endpoint override, e.g. a remote Ollama.")
+    max_replans: int = Field(
+        default=1, ge=0, le=3,
+        description="How often a failed run may be re-planned with the error as feedback (LLM planners only; "
+                    "each costs one more planner call). 0 disables.",
+    )
+    llm_max_output_tokens: int = Field(
+        default=4096, ge=256, le=131072,
+        description="Groq/Ollama output budget per plan, reasoning included. Groq counts it against the "
+                    "account's tokens-per-minute limit, so keep prompt + budget under that limit.",
+    )
     llm_json_mode: Literal["auto", "json_schema", "json_object"] = Field(
         default="auto", description="Groq/Ollama structured-output mode; auto picks per provider and model."
     )
@@ -114,6 +124,6 @@ class Settings(BaseModel):
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-5-5",
     "gemini": "gemini-3.8-flash",
-    "groq": "openai/gpt-oss-20b",
+    "groq": "openai/gpt-oss-120b",
     "ollama": "gpt-oss:20b",
 }

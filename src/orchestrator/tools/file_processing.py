@@ -227,5 +227,23 @@ class FileProcessingTool(ToolAdapter):
             return RESOURCE_PENDING
         return None
 
+    def peek_columns(self, relative: str, max_bytes: int = 64 * 1024) -> list[str] | None:
+        """The header row of a CSV (column names only, no data), or None if it is not a readable
+        CSV. Reads at most ``max_bytes``. Callers must check permission first."""
+        try:
+            path = self.resolve(relative)
+        except PermissionDeniedError:
+            return None
+        if path.suffix.lower() != ".csv" or not path.is_file():
+            return None
+        with path.open("rb") as fh:
+            head = fh.read(max_bytes)
+        try:
+            text = head.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return None
+        first = next(csv.reader(io.StringIO(text)), None)
+        return [c.strip() for c in first if c.strip()] if first else None
+
     async def health_check(self) -> bool:
         return self._root.is_dir()
