@@ -18,7 +18,7 @@ Remaining before a production rollout:
 |---|---|---|
 | Live run of the Claude planner | ⛔ | an Anthropic API key, then `python examples/mvp_demo.py --planner anthropic` |
 | Live web-search backend | ⛔ | a decision: keyed search API or Anthropic's server-side web search |
-| Docker image and CI first run | 🟡 | push to GitHub; the CI workflow builds and tests both |
+| Docker smoke test in CI | 🟡 | fix ready; needs a re-run after push |
 | Persistent requests/approvals/idempotency (multi-instance) | ⬜ | a database + distributed lock, when one instance is no longer enough |
 | Stronger Python isolation | ⬜ | container execution, if untrusted users get `python_exec` |
 | File upload endpoint, LLM-written summaries, OpenTelemetry export | ⬜ | optional extensions (spec §11) |
@@ -147,11 +147,11 @@ Remaining before a production rollout:
 | Tool registration documented | ✅ | `docs/TOOLS.md` |
 | API endpoints documented | ✅ | `docs/API.md` (+ live OpenAPI at `/docs`) |
 | Deployment configuration | ✅ | `Dockerfile`, `docker-compose.yml`, `.env.example`, `requirements.lock`, `docs/DEPLOYMENT.md` |
-| Docker image built and smoke-tested | 🟡 | defined, but Docker was unavailable locally; the CI `docker` job builds and probes it — not yet run |
+| Docker image built and smoke-tested | 🟡 | builds in CI (first run, 2026-11-22). The smoke test failed because the job started the image without the `/config` it requires; fixed (example config mounted, logs always printed), awaiting a re-run |
 | CLI: `serve`, `hash-key`, `check-config` | ✅ | `python -m orchestrator` |
 | Example workflows | ✅ | `examples/mvp_demo.py`, `custom_tool.py`, `approval_workflow.py` (all run in tests) |
 | Monitoring and logging | ✅ | JSON logs to stdout, optional audit mirroring, `/admin/metrics`, health check |
-| CI | 🟡 | `.github/workflows/ci.yml` (Linux 3.11 + 3.14, Windows 3.14, Docker) — not yet run on GitHub |
+| CI | 🟡 | `.github/workflows/ci.yml`. First run: tests and examples pass on Linux 3.11, Linux 3.14 and Windows 3.14; Docker smoke test fixed, awaiting a re-run |
 | Docs kept in sync with code | ✅ | `tests/test_docs_and_cli.py` fails if a setting or route is undocumented, a documented setting no longer exists, or a doc link breaks |
 | Minimum Python version verified | ✅ | full suite passes on 3.11 (installed from `requirements.lock`) and 3.14 |
 

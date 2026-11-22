@@ -23,7 +23,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     from orchestrator.observability.logging import configure_logging
 
-    settings = Settings.from_env()
+    try:
+        settings = Settings.from_env()
+    except ConfigurationError as exc:
+        print(f"ERROR settings: {exc.message}: {exc.details.get('errors')}", file=sys.stderr)
+        return 1
+    # Fail fast with a readable message (not a stack trace) when the config cannot be loaded.
+    errors, warnings = check_config(settings)
+    for w in warnings:
+        print(f"WARNING {w}", file=sys.stderr)
+    if errors:
+        for e in errors:
+            print(f"ERROR   {e}", file=sys.stderr)
+        print("not starting: fix the errors above (see `python -m orchestrator check-config`)", file=sys.stderr)
+        return 1
     configure_logging(settings.log_level)
     uvicorn.run(
         "orchestrator.api:create_app",

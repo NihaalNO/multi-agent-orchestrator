@@ -5,6 +5,8 @@
 > The image definition is provided but was **not built during development** (Docker was not
 > available on the development machine). The CI workflow (`.github/workflows/ci.yml`) is set up
 > to build and smoke-test it on every push to `main` and every pull request.
+> The image expects `/config/policy.json` and `/config/principals.json` to be mounted and will not
+> start without them.
 
 ```powershell
 Copy-Item .env.example .env                      # then set ANTHROPIC_API_KEY
@@ -35,7 +37,7 @@ python -m venv .venv
 
 | Command | Purpose |
 |---|---|
-| `python -m orchestrator serve [--host] [--port] [--proxy-headers]` | run the API with JSON logging. Use `--proxy-headers` only behind a proxy you control. |
+| `python -m orchestrator serve [--host] [--port] [--proxy-headers]` | run the API with JSON logging. Refuses to start (exit 1, readable errors) if the settings, policy or principals cannot be loaded. Use `--proxy-headers` only behind a proxy you control. |
 | `python -m orchestrator hash-key` | hash a key typed at a hidden prompt (or piped on stdin) |
 | `python -m orchestrator hash-key --generate` | create a new random key and print it with its hash |
 | `python -m orchestrator check-config` | load settings, policy and principals; print errors and warnings; exit 1 on errors |

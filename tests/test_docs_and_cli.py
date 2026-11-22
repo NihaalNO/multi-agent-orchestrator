@@ -110,3 +110,18 @@ def test_check_config_reports_broken_files(tmp_path):
     bad.write_text("{not json", encoding="utf-8")
     errors, _ = check_config(Settings(policy_path=bad, llm_provider="rule_based"), environ={})
     assert errors and errors[0].startswith("policy:")
+
+
+def test_serve_refuses_to_start_with_broken_config(monkeypatch, tmp_path, capsys):
+    import uvicorn
+
+    def must_not_run(*a, **k):
+        raise AssertionError("uvicorn must not start with a broken config")
+
+    monkeypatch.setattr(uvicorn, "run", must_not_run)
+    monkeypatch.setenv("ORCH_LLM_PROVIDER", "rule_based")
+    monkeypatch.setenv("ORCH_POLICY_PATH", str(tmp_path / "missing-policy.json"))
+    monkeypatch.setenv("ORCH_PRINCIPALS_PATH", str(tmp_path / "missing-principals.json"))
+    assert main(["serve"]) == 1
+    err = capsys.readouterr().err
+    assert "file not found" in err and "not starting" in err
