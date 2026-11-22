@@ -12,15 +12,18 @@ parallel execution, conflict resolution) has independently tested code, and they
 end to end (spec §13 completion standard): the MVP request runs through `POST /requests`, and all
 ten essential test scenarios pass.
 
+Since then: live Groq planning works end to end in the browser chat (`/ui`), with re-planning on
+plan errors and a retry for unreadable plans. Phases 09–14 below are the plan for what comes next.
+
 Remaining before a production rollout:
 
 | Item | State | Needs |
 |---|---|---|
-| Live run of a real planner | ⛔ | any one of: Anthropic credits, a Gemini key (`--planner gemini --search gemini`), a Groq key (`--planner groq`), or a local Ollama (`--planner ollama`, no key) with `python examples/mvp_demo.py` |
-| Live web search run | ⛔ | built for both providers (`ORCH_SEARCH_BACKEND=anthropic` / `gemini`); needs a working key for either |
+| Live run of a real planner | ✅ | Groq (`openai/gpt-oss-120b`) through the API and the chat page, 2026-11-22; Anthropic still blocked on account credits |
+| Live web search run | ⛔ | built for both providers (`ORCH_SEARCH_BACKEND=anthropic` / `gemini`); needs a working key for either (Groq has no search backend) |
 | Multi-instance deployment | ⬜ | durable state is done (SQLite, single instance); scaling out needs a shared database + distributed lock, when one instance is no longer enough |
-| Stronger Python isolation | ⬜ | container execution, if untrusted users get `python_exec` |
-| LLM-written summaries, OpenTelemetry export, MCP tool discovery, container Python sandbox | ⬜ | optional extensions (spec §11) |
+| Stronger Python isolation | ⬜ | planned in Phase 09 |
+| LLM-written summaries, OpenTelemetry export | ⬜ | optional extensions (spec §11); MCP tools and the container sandbox are now Phases 13 and 09 |
 
 ---
 
@@ -155,6 +158,64 @@ Remaining before a production rollout:
 | CI | ✅ | `.github/workflows/ci.yml`: tests and examples on Linux 3.11, Linux 3.14 and Windows 3.14, plus the Docker job — all passing (run 44984412929). The first run's Docker failure was a CI setup error, fixed in f412135. |
 | Docs kept in sync with code | ✅ | `tests/test_docs_and_cli.py` fails if a setting or route is undocumented, a documented setting no longer exists, or a doc link breaks |
 | Minimum Python version verified | ✅ | full suite passes on 3.11 (installed from `requirements.lock`) and 3.14 |
+
+---
+
+## Next phases (planned)
+
+Direction: **an agent whose answers can be proven.** The LLM already only proposes while
+deterministic code decides, checks permissions and records argument hashes. The phases below build
+on that so every answer is linked to its evidence, can be replayed, and runs under rules that can be
+tested before they change. Phase 09 is a prerequisite; Phase 10 is the main differentiator.
+
+## Phase 09 — Foundations  ⬜
+
+| Item | Status | Notes |
+|---|---|---|
+| Real Python sandbox | ⬜ | container or WebAssembly execution (`IsolationLevel.CONTAINER`): no host file access, no network unless granted, CPU/memory limits. Required before untrusted users get `python_exec` |
+| Live progress in the chat | ⬜ | stream plan, step and approval events (server-sent events) instead of one long wait |
+| Conversation memory within permissions | ⬜ | follow-ups refer to earlier results ("now double it") via `$ref` to a previous request's outputs; only the user's own requests, and every step is authorized again |
+
+Done when: code runs in the sandbox by default with the same tests passing, the chat shows steps as
+they finish, and a follow-up can use an earlier result without leaking another user's data.
+
+## Phase 10 — Verifiable answers  ⬜
+
+| Item | Status | Notes |
+|---|---|---|
+| Every number linked to its source | ⬜ | each figure in the final answer must match a tool output; a figure with no source is flagged, never shown as fact |
+| Signed receipts | ⬜ | per request: plan, policy version, argument and output hashes, approvals, chained in the audit log so tampering is detectable |
+| Replay | ⬜ | re-run a request from its receipt and compare outputs: audits, regression checks, "would this still give the same answer?" |
+
+Done when: the chat shows the source of every number, a receipt verifies offline, and a replay of
+an unchanged request reproduces its outputs.
+
+## Phase 11 — Plans people can see and control  ⬜
+
+| Item | Status | Notes |
+|---|---|---|
+| Preview before running | ⬜ | show tools, files, approvals needed and expected cost; the user edits, approves or cancels |
+| Saved workflows | ⬜ | a good plan is saved, reviewed by an admin and rerun without calling the LLM: deterministic, cheaper, more reliable over time |
+
+## Phase 12 — Policy you can test  ⬜
+
+| Item | Status | Notes |
+|---|---|---|
+| Policy simulation | ⬜ | replay recent requests against a proposed policy: "this change would allow 14 more requests and block 2" |
+| Denial explanations | ⬜ | every denial names the missing grant and how to request it |
+
+## Phase 13 — More planners and tools, same rules  ⬜
+
+| Item | Status | Notes |
+|---|---|---|
+| Planners checking each other | ⬜ | two providers plan independently; the conflict resolver compares plans or answers and disagreement becomes a caveat |
+| MCP tools under policy | ⬜ | register tools from MCP servers at runtime, each one going through permissions, approvals and audit |
+
+## Phase 14 — Measuring planner quality  ⬜
+
+| Item | Status | Notes |
+|---|---|---|
+| Provider scorecards | ⬜ | a fixed set of requests run against each provider and model: first-plan success, re-plans needed, time and cost. Live runs showed `gpt-oss-20b` and `gpt-oss-120b` differ sharply, which only measurement reveals |
 
 ---
 

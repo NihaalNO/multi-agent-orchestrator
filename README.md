@@ -632,20 +632,25 @@ docs/               specification, architecture, API, tools, deployment, roadmap
 
 All eight phases of the [specification](docs/SPEC.md) are complete, and every essential test
 scenario passes. Since then the project has gained live web search, three more LLM providers,
-durable state and file uploads. CI is green.
+durable state, file uploads and a browser chat. CI is green.
 
 Be aware of:
 
-- **No live LLM run yet.** Every provider is tested only against fake clients. The first real run
-  needs a key for any one provider (or a local Ollama) — see [Try it in 30 seconds](#try-it-in-30-seconds).
+- **Live runs so far use Groq only.** Groq (`openai/gpt-oss-120b`) has been run live through the API
+  and the chat; Anthropic, Gemini and Ollama are tested against fake clients. Live web search needs
+  an Anthropic or Gemini key.
+- **No conversation memory.** Each message is planned on its own; mention files or values again in
+  follow-ups.
 - **One server instance.** Durable state is a local SQLite file; running several servers needs a
   shared database and distributed locks.
 - **Python is not sandboxed.** Use it only with trusted users until container isolation is added.
 - **Metrics reset on restart** (the audit log, if configured, is durable).
 - **No license file yet** — the default copyright rules apply until one is added.
 
-Planned options are tracked in [docs/ROADMAP.md](docs/ROADMAP.md): container sandbox for Python,
-MCP tool discovery, LLM-written answers, OpenTelemetry export.
+The next phases are planned in [docs/ROADMAP.md](docs/ROADMAP.md): a Python sandbox, live progress
+and conversation memory (09); answers linked to their evidence, with signed, replayable receipts
+(10); plan preview and saved workflows (11); policy simulation (12); cross-checking planners and MCP
+tools under policy (13); provider scorecards (14).
 
 ---
 
