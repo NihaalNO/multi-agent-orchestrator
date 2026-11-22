@@ -168,13 +168,13 @@ deterministic code decides, checks permissions and records argument hashes. The 
 on that so every answer is linked to its evidence, can be replayed, and runs under rules that can be
 tested before they change. Phase 09 is a prerequisite; Phase 10 is the main differentiator.
 
-## Phase 09 — Foundations  🟡
+## Phase 09 — Foundations  ✅
 
 | Item | Status | Notes |
 |---|---|---|
 | Real Python sandbox | ✅ | WebAssembly (CPython 3.15 for WASI in wasmtime, `IsolationLevel.WASM`): no host files or network, memory and time caps; `tests/test_wasm_sandbox.py`, CI fetches the build on Linux and Windows, Docker image requires it. Verified live with Groq through the chat. Standard library only |
-| Live progress in the chat | ⬜ | stream plan, step and approval events (server-sent events) instead of one long wait |
-| Conversation memory within permissions | ⬜ | follow-ups refer to earlier results ("now double it") via `$ref` to a previous request's outputs; only the user's own requests, and every step is authorized again |
+| Live progress in the chat | ✅ | `POST /requests/stream` (server-sent events from the audit stream through `observability/progress.py`, whitelisted fields only); the chat shows a live step checklist. Verified live with Groq + Tavily |
+| Conversation memory within permissions | ✅ | `context` on `POST /requests` (and `/stream`): earlier requests become R1…, values flow by `{"$ref": "@R1.task.path"}`; only the user's own completed requests (admins included in the rule), steps authorized as usual, referenced values become answer evidence. Verified live with Groq ("now double it" → 258,650 from `@R1.avg_revenue.result`) |
 
 Done when: code runs in the sandbox by default with the same tests passing, the chat shows steps as
 they finish, and a follow-up can use an earlier result without leaking another user's data.

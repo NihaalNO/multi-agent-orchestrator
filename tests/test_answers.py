@@ -252,3 +252,14 @@ def test_chat_page_renders_answers_as_text_with_safe_links():
     js = (Path(app_module.__file__).parent / "static" / "chat.js").read_text(encoding="utf-8")
     block = js[js.index("function groundedAnswer"):js.index("function safeUrl")]
     assert "safeUrl(e.url" in block and "innerHTML" not in js
+
+
+async def test_an_answer_without_inline_citations_is_flagged(orchestrator):
+    make, _ = orchestrator
+    composer = FakeComposer({"answer": "The average revenue is 329,318.", "gaps": [],
+                             "claims": [{"statement": "The average revenue is 329,318", "evidence": ["E2"]}]})
+    record = await make(composer).submit(MVP, ALICE)
+    assert record.answer.cites_inline is False and record.answer.supported == 1
+    cited = FakeComposer({"answer": "The average revenue is 329,318 [E2].", "gaps": [],
+                          "claims": [{"statement": "The average revenue is 329,318", "evidence": ["E2"]}]})
+    assert (await make(cited).submit(MVP, ALICE)).answer.cites_inline is True

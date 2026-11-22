@@ -63,10 +63,12 @@ class DagScheduler:
         approvals: Mapping[str, str] | None = None,
         deadline_s: float | None = None,
         prior: Mapping[str, TaskResult] | None = None,
+        context: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> ExecutionReport:
         """Run ``plan``. ``prior`` holds results of an earlier run of the same plan (e.g. before
         an approval): tasks that already succeeded keep their result and are not re-run; their
-        outputs feed downstream ``$ref``s as usual. Everything else runs again."""
+        outputs feed downstream ``$ref``s as usual. Everything else runs again. ``context`` maps
+        earlier requests' aliases (R1...) to their task outputs, for ``@R1.task`` references."""
         unbound = [t.task_id for t in plan.tasks if t.tool_id is None]
         if unbound:
             raise ValueError(f"plan has unbound tasks (route it first): {unbound}")
@@ -110,7 +112,7 @@ class DagScheduler:
                 del waiting[task_id]
                 task = plan.task(task_id)
                 try:
-                    args = resolve(task.inputs, outputs)
+                    args = resolve(task.inputs, outputs, context)
                 except InputResolutionError as exc:
                     settle(task_id, TaskResult(task_id=task_id, tool_id=task.tool_id, operation=task.operation,
                                                status=TaskStatus.FAILED, error=ErrorInfo.from_exception(exc),

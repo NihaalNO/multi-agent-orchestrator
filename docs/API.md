@@ -53,6 +53,7 @@ Plan, route, authorize, execute and reconcile a natural-language request.
 | `text` | 1–20,000 characters. Treated as untrusted data by the planner. |
 | `files` | Names of uploaded files (see [Files](#files)) that the request may use. |
 | `allow_partial` | `true`: run the parts that can be routed and report the rest as caveats. `false` (default): reject the whole request if any part cannot be routed. |
+| `context` | Up to 5 ids of **your own completed** earlier requests, oldest first: a follow-up ("now double it") can use their results. They become `R1`, `R2`…; the planner sees their questions, answers and output shapes, and references values with `{"$ref": "@R1.<task_id>.<path>"}`, resolved from the stored record when the step runs. Another user's id (admins included) answers `404` like a missing one; an unfinished or failed request answers `409`. |
 
 Optional header **`Idempotency-Key`** (≤ 200 chars): re-sending the same key (same user) returns
 the existing request instead of planning and running it again.
@@ -105,6 +106,23 @@ Returned by all request endpoints.
 
 Task statuses: `succeeded`, `failed`, `timed_out`, `denied`, `awaiting_approval`, `skipped`
 (an upstream task did not succeed), `cancelled` (deadline or cancellation).
+
+### `POST /requests/stream`
+
+The same request as `POST /requests` (same body, same `Idempotency-Key` handling), answered as
+**server-sent events** while it runs (`text/event-stream`). Read it with `fetch` and the response
+body; `EventSource` cannot send the `Authorization` header.
+
+| Event | Data |
+|---|---|
+| `accepted` | `{"request_id": "…"}`: sent first, before planning starts |
+| `progress` | one per change: `received`, `planner_retry`, `planned` (`tasks`), `executing`, `task_started` (`task_id`, `tool`, `operation`), `task_retry`, `task_finished` (`task_id`, `tool`, `status`, `duration_ms`, `deduplicated`, `error` code), `approval_needed`, `replanning` (`attempt`, `failed` task ids), `conflict`, `answering`, `answered` (claim counts), `answer_failed`, `finished` (`state`); each has `at` |
+| `record` | `{"status": <the status POST /requests would return>, "record": {…}}`: the last event |
+| `error` | `{"status": …, "error": {…}}` instead of `record` if the request could not run |
+
+Progress carries names, statuses and timings only — never arguments, outputs, file paths or user
+ids; results come in the final record. A `: keep-alive` comment is sent after 15 s without events.
+Closing the stream does **not** cancel the request: fetch it later with `GET /requests/{id}`.
 
 ### `GET /requests/{request_id}`
 

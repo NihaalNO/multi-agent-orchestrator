@@ -393,6 +393,11 @@ Open **http://127.0.0.1:8000/** (it redirects to `/ui`) and paste your API key. 
 client over the same endpoints shown below:
 
 - type a request in plain English; Enter sends, Shift+Enter adds a line;
+- follow-ups can build on earlier replies ("now double it"): the chat sends the last five as
+  `context`, and the plan references their results instead of retyping them; **New conversation**
+  starts over;
+- while it runs, the reply is a live checklist: the plan's steps, each one starting (◌) and finishing
+  (✓ / ✗ with its time), re-plans, and "writing the answer" (via `POST /requests/stream`);
 - attach a file with the paperclip — it is uploaded to `users/<your id>/` and listed with the request;
 - each reply shows the key results, the summary with its caveats, and the individual steps (plan,
   outputs, errors) behind a "Steps" toggle;
@@ -457,6 +462,7 @@ sequenceDiagram
 | `GET /ui` (and `GET /` → redirect) | anyone | chat page (static; it asks for your key) |
 | `GET /me` | any user | your id and roles |
 | `POST /requests` | any user | submit a request |
+| `POST /requests/stream` | any user | the same, as server-sent events: live progress, then the record |
 | `GET /requests/{id}` | owner, admin | view a request |
 | `POST /requests/{id}/resume` | owner | continue after approvals |
 | `PUT /files/{path}` · `GET /files` · `DELETE /files/{path}` | per policy | upload, list, delete files |
@@ -670,8 +676,8 @@ Be aware of:
 - **Live runs so far use Groq only.** Groq (`openai/gpt-oss-120b`) has been run live through the API
   and the chat; Anthropic, Gemini and Ollama are tested against fake clients. Live web search needs
   an Anthropic or Gemini key.
-- **No conversation memory.** Each message is planned on its own; mention files or values again in
-  follow-ups.
+- **Conversation memory is per chat tab.** The chat sends the ids of its last five completed
+  replies with each message; reloading the page (or **New conversation**) starts fresh.
 - **One server instance.** Durable state is a local SQLite file; running several servers needs a
   shared database and distributed locks.
 - **Sandboxed Python has the standard library only** (no numpy or pandas), and each run starts a
