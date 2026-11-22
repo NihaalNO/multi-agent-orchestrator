@@ -110,17 +110,17 @@ With a real LLM (each run costs a little API usage):
 
 ```mermaid
 flowchart LR
-    U([User request]) --> A[1 · Intake<br/>validate, idempotency key]
-    A --> P[2–3 · Plan<br/>LLM proposes tasks]
-    P --> R[4–5 · Route<br/>bind each task to a tool]
-    R --> Z[6 · Authorize<br/>default-deny policy]
-    Z --> D[7 · Schedule<br/>dependency graph]
-    D --> X[8 · Execute<br/>parallel, timeouts, retries]
-    X --> V[9 · Validate<br/>output schemas]
-    V --> C[10 · Resolve<br/>conflicts and caveats]
-    C --> S[11–12 · Respond<br/>record and summary]
-    Z -. denied / no tool .-> RJ([Rejected — nothing runs])
-    X -. sensitive step .-> AP([Awaiting approval → resume])
+    U(["User request"]) --> A["1. Intake<br/>validate, idempotency key"]
+    A --> P["2-3. Plan<br/>LLM proposes tasks"]
+    P --> R["4-5. Route<br/>bind each task to a tool"]
+    R --> Z["6. Authorize<br/>default-deny policy"]
+    Z --> D["7. Schedule<br/>dependency graph"]
+    D --> X["8. Execute<br/>parallel, timeouts, retries"]
+    X --> V["9. Validate<br/>output schemas"]
+    V --> C["10. Resolve<br/>conflicts and caveats"]
+    C --> S["11-12. Respond<br/>record and summary"]
+    Z -.->|"denied or no tool"| RJ(["Rejected: nothing runs"])
+    X -.->|"sensitive step"| AP(["Awaiting approval, then resume"])
 ```
 
 | Stage | What happens | Where |
@@ -140,22 +140,22 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    API[HTTP API · FastAPI<br/>auth, requests, approvals, files] --> ORC[Orchestrator<br/>12-stage lifecycle]
-    ORC --> PL[Planner<br/>Claude · Gemini · Groq · Ollama · rule-based]
-    ORC --> RT[Capability router]
-    RT --> REG[(Tool registry)]
-    ORC --> PM[Permission manager<br/>grants · approvals]
-    ORC --> SCH[DAG scheduler]
-    SCH --> ENG[Execution engine]
+    API["HTTP API (FastAPI)<br/>auth, requests, approvals, files"] --> ORC["Orchestrator<br/>12-stage lifecycle"]
+    ORC --> PL["Planner<br/>Claude, Gemini, Groq, Ollama, rule-based"]
+    ORC --> RT["Capability router"]
+    RT --> REG[("Tool registry")]
+    ORC --> PM["Permission manager<br/>grants and approvals"]
+    ORC --> SCH["DAG scheduler"]
+    SCH --> ENG["Execution engine"]
     ENG --> REG
     ENG --> PM
-    REG --> T1[File processing]
-    REG --> T2[Python execution]
-    REG --> T3[Web search]
-    REG --> T4[Your tools…]
-    ORC --> RES[Conflict resolver]
-    ORC --> ST[(Durable state<br/>SQLite, optional)]
-    AUD[Audit log and metrics] -. observes .- ORC
+    REG --> T1["File processing"]
+    REG --> T2["Python execution"]
+    REG --> T3["Web search"]
+    REG --> T4["Your tools"]
+    ORC --> RES["Conflict resolver"]
+    ORC --> ST[("Durable state<br/>SQLite, optional")]
+    AUD["Audit log and metrics"] -.-|"observes"| ORC
 ```
 
 | Component | Responsibility | Module |
