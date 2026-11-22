@@ -1,6 +1,6 @@
 """HTTP API (FastAPI).
 
-Every endpoint except ``/health`` requires ``Authorization: Bearer <api key>``; the key maps to
+Every endpoint except ``/health`` and the chat UI (``/ui``, static files) requires ``Authorization: Bearer <api key>``; the key maps to
 a ``Principal`` (see ``api/auth.py``). Admin endpoints additionally require the admin role,
 approval decisions the approver role.
 
@@ -17,10 +17,11 @@ Status codes: 200 completed/failed, 202 awaiting approval, 4xx/5xx rejected (bod
 # dependency aliases (PrincipalDep, AdminDep, ...) at route-definition time.
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from pathlib import Path
 from typing import Annotated, Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from orchestrator.core import Orchestrator, RequestRecord, RequestState, register_default_tools
@@ -88,6 +89,29 @@ def _status_for(exc: OrchestratorError) -> int:
         if isinstance(exc, cls):
             return status
     return 400
+
+
+# Chat UI: static files, read on each request (they are small). The page holds no data and no
+# secrets; it calls the same authenticated endpoints as any client, with the key the user enters.
+_UI_DIR = Path(__file__).parent / "static"
+_UI_TYPES = {
+    "chat.html": "text/html; charset=utf-8",
+    "chat.css": "text/css; charset=utf-8",
+    "chat.js": "text/javascript; charset=utf-8",
+}
+_UI_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+                               "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-cache",
+}
+
+
+def _ui_file(name: str) -> Response:
+    if name not in _UI_TYPES:
+        raise HTTPException(404, "not found")
+    return Response((_UI_DIR / name).read_bytes(), media_type=_UI_TYPES[name], headers=_UI_HEADERS)
 
 
 def _descriptor_json(d: ToolDescriptor) -> dict[str, Any]:
@@ -230,6 +254,20 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok", "version": __version__}
+
+    @app.get("/", include_in_schema=False)
+    async def root() -> RedirectResponse:
+        return RedirectResponse("/ui")
+
+    @app.get("/ui", include_in_schema=False)
+    async def chat_page() -> Response:
+        return _ui_file("chat.html")
+
+    @app.get("/ui/{name}", include_in_schema=False)
+    async def chat_asset(name: str) -> Response:
+        if name == "chat.html":
+            raise HTTPException(404, "not found")
+        return _ui_file(name)
 
     # ------------------------------------------------------------------ authenticated
 

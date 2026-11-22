@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orchestrator Chat</title>
+  <link rel="stylesheet" href="/ui/chat.css">
+  <script src="/ui/chat.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <span class="brand">Orchestrator</span>
+    <span id="who" class="who" hidden></span>
+    <button id="signout" class="link" type="button" hidden>Sign out</button>
+  </header>
+
+  <section id="signin" class="signin" hidden>
+    <form id="signin-form" class="card">
+      <h1>Sign in</h1>
+      <p class="muted">Paste your API key. It stays in this browser tab only and is cleared when the tab closes.</p>
+      <label for="key">API key</label>
+      <input id="key" type="password" autocomplete="off" spellcheck="false" required>
+      <p id="signin-error" class="error" role="alert" hidden></p>
+      <button type="submit" class="primary">Sign in</button>
+    </form>
+  </section>
+
+  <main id="chat" class="chat" hidden>
+    <div id="log" class="log" aria-live="polite">
+      <div class="empty" id="empty">
+        <p>Ask for something in plain English, for example:</p>
+        <p class="example">Read users/&lt;you&gt;/sales.csv and calculate its average revenue using Python</p>
+        <p class="muted">Attach a CSV or text file with the paperclip; it is uploaded to your own folder.</p>
+      </div>
+    </div>
+
+    <form id="composer" class="composer">
+      <div id="chips" class="chips"></div>
+      <div class="row">
+        <label class="attach" title="Attach a file">
+          <input id="file" type="file" hidden>
+          <span aria-hidden="true">&#128206;</span><span class="sr">Attach a file</span>
+        </label>
+        <textarea id="text" rows="1" placeholder="Message the agent" title="Enter to send, Shift+Enter for a new line" aria-label="Message the agent" required></textarea>
+        <button id="send" type="submit" class="primary">Send</button>
+      </div>
+      <label class="option"><input id="partial" type="checkbox" checked> Return partial results if some steps fail</label>
+    </form>
+  </main>
+</body>
+</html>

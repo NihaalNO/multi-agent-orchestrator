@@ -5,7 +5,7 @@ The server also publishes an interactive OpenAPI description at `/docs` (Swagger
 
 ## Authentication
 
-Every endpoint except `GET /health` needs
+Every endpoint except `GET /health` and the chat page (`GET /`, `GET /ui`, `GET /ui/{name}`) needs
 
 ```
 Authorization: Bearer <api key>
@@ -180,6 +180,7 @@ Delete a file you may delete. `404` if it does not exist. Deletions are audited 
 | Endpoint | Returns |
 |---|---|
 | `GET /health` | `{"status": "ok", "version": "…"}` — public, for load balancers and container health checks |
+| `GET /ui`, `GET /ui/{name}` | the browser chat page and its `chat.css` / `chat.js` — public static files with a strict CSP; the page asks for your API key and calls the endpoints below. `GET /` redirects here |
 | `GET /me` | your user id and roles |
 | `GET /tools` | every registered tool with its spec and runtime state (`enabled`, `health`, `available`) |
 | `GET /tools?capability=web.search` | ranked `(tool, operation)` candidates for a capability |

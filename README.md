@@ -237,7 +237,8 @@ source.
 
 Clients send `Authorization: Bearer <api key>`. The server stores only **SHA-256 hashes** of keys
 (in `config/principals.json`) and compares in constant time. Each key maps to a user id and roles.
-`/health` is the only public endpoint. No principals file → nobody can log in.
+`/health` and the chat page's static files (`/ui`) are the only public endpoints; the page itself
+holds no data and calls the API with the key you type in. No principals file → nobody can log in.
 
 ### 2. Authorization — what may you do?
 
@@ -380,6 +381,21 @@ All 32 settings are documented in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#config
 
 ## Using the API
 
+### Chat in the browser
+
+Open **http://127.0.0.1:8000/** (it redirects to `/ui`) and paste your API key. The page is a thin
+client over the same endpoints shown below:
+
+- type a request in plain English; Enter sends, Shift+Enter adds a line;
+- attach a file with the paperclip — it is uploaded to `users/<your id>/` and listed with the request;
+- each reply shows the key results, the summary with its caveats, and the individual steps (plan,
+  outputs, errors) behind a "Steps" toggle;
+- if a step needs approval, approvers get Approve / Deny buttons and then **Continue** resumes the request.
+
+The key is kept in the tab's `sessionStorage` only (cleared when the tab closes). The page is served
+with a strict Content-Security-Policy (no inline or third-party scripts) and renders all server text
+as plain text.
+
 ### Upload a file, then ask about it
 
 ```powershell
@@ -430,6 +446,7 @@ sequenceDiagram
 | Endpoint | Who | Purpose |
 |---|---|---|
 | `GET /health` | anyone | liveness |
+| `GET /ui` (and `GET /` → redirect) | anyone | chat page (static; it asks for your key) |
 | `GET /me` | any user | your id and roles |
 | `POST /requests` | any user | submit a request |
 | `GET /requests/{id}` | owner, admin | view a request |
@@ -589,7 +606,7 @@ All three run offline and are executed by the test suite, so they stay working.
 
 ```text
 src/orchestrator/
-├── api/            HTTP API: app, authentication
+├── api/            HTTP API: app, authentication, chat UI (static/)
 ├── contracts/      data models shared by every component
 ├── registry/       dynamic tool registry
 ├── routing/        planners (Claude, Gemini, Groq/Ollama, rule-based), router, shared LLM contract

@@ -144,6 +144,8 @@ PostgreSQL and Redis), deliberately deferred until it is needed.
       service account can read and use the network. Grant `python_exec` only to trusted users, or
       run it in a container (`IsolationLevel.CONTAINER` is reserved for that).
 - [ ] The file tool is limited to `ORCH_FILE_TOOL_ROOT`; keep nothing sensitive there.
+- [ ] The chat page (`/ui`) is public static content; it needs a valid API key for everything it
+      does. Serve it over TLS like the API, since users paste their key into it.
 - [ ] Upload grants are scoped (e.g. `file:users/{user_id}/*`) so users cannot read or overwrite
       each other's files; only admins write to shared folders.
 - [ ] Rotate a key by replacing its hash and restarting; remove a user by deleting their entry.
