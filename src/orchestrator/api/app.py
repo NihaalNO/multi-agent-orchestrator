@@ -9,6 +9,7 @@ Files: PUT /files/{path} (raw body), GET /files, DELETE /files/{path} — see ``
 Request lifecycle over HTTP:
   POST /requests                 plan, route, authorize, execute, resolve; returns the record
   POST /requests/stream          the same, as server-sent events: live progress, then the record
+  POST /requests/{id}/replay     run the stored plan again and compare every step with the original
   GET  /requests/{id}            the record (owner or admin)
   POST /requests/{id}/resume     after approvals are decided, run what is left
 Status codes: 200 completed/failed, 202 awaiting approval, 4xx/5xx rejected (body is the record).
@@ -372,6 +373,12 @@ def create_app(
 
         return StreamingResponse(events(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/requests/{request_id}/replay")
+    async def replay_request(request_id: str, principal: PrincipalDep) -> dict[str, Any]:
+        """Run the stored plan again (read and compute steps only, under your current permissions)
+        and compare each step with the original. The original record is not changed."""
+        return (await orchestrator.replay(request_id, principal)).model_dump(mode="json")
 
     @app.get("/requests/{request_id}/receipt")
     async def get_receipt(request_id: str, principal: PrincipalDep) -> dict[str, Any]:

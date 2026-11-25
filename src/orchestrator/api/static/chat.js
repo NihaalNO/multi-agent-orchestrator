@@ -377,6 +377,73 @@ async function renderRecord(bubble, record, status) {
   const s = steps(record);
   if (s) bubble.append(s);
   if (record.receipt) bubble.append(receiptLine(record.receipt));
+  if (record.plan && record.report && (record.state === "completed" || record.state === "failed")) {
+    bubble.append(replayControl(record.request_id));
+  }
+}
+
+// ------------------------------------------------------------------ replay
+
+const REPLAY_OUTCOME = {
+  identical: ["ok", "same"],
+  differs: ["warn", "changed"],
+  failed: ["bad", "failed"],
+  not_rerun: ["", "not re-run"],
+};
+
+// "Would this still give the same answer today?" Runs the stored plan again (read and compute
+// steps only, under the user's current permissions) and shows each step's outcome.
+function replayControl(requestId) {
+  const box = el("div", { class: "replay" });
+  const button = el("button", { type: "button", class: "secondary small-btn", text: "Replay",
+    title: "Run the same steps again now and compare each result with this one",
+    onclick: async () => {
+      button.disabled = true;
+      const status = working("Replaying the steps");
+      box.replaceChildren(button, status);
+      try {
+        const { ok, status: code, data } = await api("POST", `/requests/${encodeURIComponent(requestId)}/replay`);
+        status.remove();
+        box.append(ok ? replayResult(data) : el("p", { class: "error small", text: errorText(data, code) }));
+      } catch (e) {
+        status.remove();
+        box.append(el("p", { class: "error small", text: e.message === "unauthorized" ? "Signed out." : "Could not reach the server." }));
+      } finally {
+        button.disabled = false;
+        button.textContent = "Replay again";
+      }
+    } });
+  box.append(button);
+  return box;
+}
+
+function replayResult(r) {
+  const headline = {
+    identical: "Replayed now: every re-run step gave the same result.",
+    differs: "Replayed now: some results changed since the original run.",
+    incomplete: "Replayed now: some steps could not run again.",
+  }[r.verdict];
+  const out = el("div", { class: "replay-result" }, el("p", { class: "small", text: headline }));
+  const list = el("ul", { class: "replay-steps" });
+  for (const s of r.steps) {
+    const [tone, label] = REPLAY_OUTCOME[s.outcome] || ["", s.outcome];
+    const timing = s.original_ms != null && s.replay_ms != null
+      ? `${Math.round(s.original_ms)} → ${Math.round(s.replay_ms)} ms` : "";
+    const detail = [s.note, s.changed && s.changed.length ? `changed: ${s.changed.join(", ")}` : ""].filter(Boolean).join(" · ");
+    list.append(el("li", {},
+      el("span", { class: `status ${tone}`, text: label }), " ",
+      el("span", { class: "step-name", text: s.task_id }), " ",
+      el("span", { class: "muted", text: timing }),
+      detail ? el("span", { class: "note", text: detail }) : null));
+  }
+  out.append(list);
+  const facts = [];
+  if (r.policy_changed === true) facts.push("Your permissions policy has changed since the original run.");
+  if (r.receipt_matches_record === false) facts.push("Warning: the original record no longer matches its receipt.");
+  else if (r.receipt_matches_record === true) facts.push("The original record still matches its signed receipt.");
+  facts.push(r.note);
+  out.append(el("p", { class: "muted small", text: facts.join(" ") }));
+  return out;
 }
 
 // The request's receipt: hashes and ids only, signed when the server has a key. Downloadable for

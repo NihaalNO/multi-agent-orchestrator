@@ -509,6 +509,12 @@ Editing one output in the record is reported (`step compute_average output: does
 record`); removing or rewriting a receipt breaks the chain (`--chain`, from `GET /admin/receipts`).
 In the chat, each reply shows "Receipt #N · signed with key …" with a download button.
 
+**Replay** (`POST /requests/{id}/replay`, the Replay button in the chat) runs a finished request's
+stored plan again — for real, under your current permissions, without re-planning — and compares
+every step with the original: *same*, *changed* (with the paths that changed, e.g.
+`rows.4.Revenue`), *failed*, or *not re-run* for steps with side effects, which are never repeated.
+It also says whether the record still matches its receipt and whether your permissions changed.
+
 ## Grounded answers: explainable responses
 
 With a Groq or Ollama planner (`ORCH_ANSWERS=auto`), the response also gets a written answer — and
