@@ -1,0 +1,36 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "*",
+        "files": [
+          "data/wasi/python-3.15.2/lib/python3.15/pydoc_data/_pydoc.css"
+        ],
+        "createdAt": "2026-11-22T13:15:10.038Z",
+        "reason": "Claude: vendored CPython stdlib file inside the downloaded WASI build (data/wasi, gitignored); not project UI and not ours to edit"
+      },
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "files": [
+          ".impeccable/mocks/decision/canon.html"
+        ],
+        "createdAt": "2026-11-22T19:05:33.831Z",
+        "reason": "Claude: the canon card is the category standard played straight by design (a neutral Inter-style sans is part of what it depicts); decision sketch only"
+      },
+      {
+        "rule": "cream-palette",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/challenger-centre-rail.html"
+        ],
+        "createdAt": "2026-11-22T19:05:34.120Z",
+        "reason": "Claude: the dealt catalog world rw-centre-rail-reference-setting specifies an unbleached bone ground; the card shows that world faithfully and names the bookish risk; decision sketch only"
+      }
+    ]
+  },
+  "buildPath": "comp"
+}
