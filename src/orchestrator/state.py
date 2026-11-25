@@ -34,6 +34,7 @@ from orchestrator.contracts import ApprovalRequest, ErrorInfo, TaskResult
 from orchestrator.core import RequestRecord, RequestState, RequestStore
 from orchestrator.errors import ConfigurationError
 from orchestrator.permissions.approvals import _LIVE
+from orchestrator.receipts import GENESIS, Receipt, ReceiptChain
 
 SCHEMA_VERSION = 1
 
@@ -68,6 +69,12 @@ CREATE TABLE IF NOT EXISTS idempotency (
     data         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idempotency_expiry ON idempotency(expires_at);
+CREATE TABLE IF NOT EXISTS receipts (
+    sequence     INTEGER PRIMARY KEY,
+    request_id   TEXT NOT NULL,
+    data         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS receipts_request ON receipts(request_id);
 """
 
 
@@ -219,12 +226,41 @@ class SqliteIdempotencyBackend:
         self._db.execute("DELETE FROM idempotency WHERE expires_at <= ?", (now,))
 
 
+class SqliteReceiptChain(ReceiptChain):
+    """The receipt chain in SQLite: survives restarts, so the chain continues where it left off."""
+
+    def __init__(self, db: StateDB) -> None:
+        self._db = db
+
+    def head(self) -> tuple[int, str]:
+        rows = self._db.execute("SELECT data FROM receipts ORDER BY sequence DESC LIMIT 1")
+        if not rows:
+            return 0, GENESIS
+        last = Receipt.model_validate_json(rows[0][0])
+        return last.sequence, last.receipt_sha256
+
+    def append(self, receipt: Receipt) -> None:
+        self._db.execute("INSERT INTO receipts(sequence, request_id, data) VALUES (?, ?, ?)",
+                         (receipt.sequence, receipt.request_id, receipt.model_dump_json()))
+
+    def get(self, request_id: str) -> Receipt | None:
+        rows = self._db.execute("SELECT data FROM receipts WHERE request_id = ? ORDER BY sequence DESC LIMIT 1",
+                                (request_id,))
+        return Receipt.model_validate_json(rows[0][0]) if rows else None
+
+    def since(self, sequence: int = 0, limit: int = 500) -> list[Receipt]:
+        rows = self._db.execute("SELECT data FROM receipts WHERE sequence > ? ORDER BY sequence LIMIT ?",
+                                (sequence, limit))
+        return [Receipt.model_validate_json(r[0]) for r in rows]
+
+
 @dataclass
 class PersistentState:
     db: StateDB
     requests: SqliteRequestStore
     approvals: SqliteApprovalStore
     idempotency: SqliteIdempotencyBackend
+    receipts: SqliteReceiptChain
     recovered: list[str]
 
     def close(self) -> None:
@@ -239,5 +275,6 @@ def open_state(path: Path) -> PersistentState:
         requests=requests,
         approvals=SqliteApprovalStore(db),
         idempotency=SqliteIdempotencyBackend(db),
+        receipts=SqliteReceiptChain(db),
         recovered=requests.recover_interrupted(),
     )

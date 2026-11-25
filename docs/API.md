@@ -124,6 +124,29 @@ Progress carries names, statuses and timings only — never arguments, outputs, 
 ids; results come in the final record. A `: keep-alive` comment is sent after 15 s without events.
 Closing the stream does **not** cancel the request: fetch it later with `GET /requests/{id}`.
 
+### `GET /requests/{request_id}/receipt`
+
+The request's **receipt** (owner or admin; others get `404`), issued when the request finishes, once
+approvals are settled. It holds hashes, ids and statuses — never data — so it can be shared:
+`sequence` and `previous` (the hash of the previous receipt: the chain), `question_sha256`,
+`policy_sha256`, `plan_sha256`, one entry per step (`status`, `args_sha256` of the exact arguments
+that ran, `output_sha256`, `approval_id`, `approved_by`, times), the answer's text and evidence
+hashes with each claim's status, `context` (receipt hashes of earlier requests a follow-up used),
+and `key_id` + `signature` (Ed25519 over the receipt without the signature) when the server has a key.
+
+Check it offline: `python -m orchestrator verify-receipt receipt.json --public-key pub.pem --record record.json`
+(the record from `GET /requests/{id}`): signature, then every hash recomputed from the record.
+
+### `GET /receipts/public-key`
+
+Public. `{"algorithm": "Ed25519", "key_id": "…", "public_key_pem": "…"}`; `404` if receipts are unsigned.
+
+### `GET /admin/receipts?since=0&limit=500`
+
+Admin. The receipt chain after sequence `since`, for audits:
+`python -m orchestrator verify-receipt --chain chain.json --public-key pub.pem` checks that sequences
+are consecutive, each links to the previous receipt's hash, and every signature is valid.
+
 ### `GET /requests/{request_id}`
 
 The record. Visible to the user who made it and to admins; anyone else gets `404` (the API never

@@ -209,6 +209,7 @@ def create_app(
             settings, registry, permissions, approvals, audit,
             store=state.requests if state else None,
             idempotency_backend=state.idempotency if state else None,
+            receipt_chain=state.receipts if state else None,
         )
 
     @asynccontextmanager
@@ -371,6 +372,30 @@ def create_app(
 
         return StreamingResponse(events(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.get("/requests/{request_id}/receipt")
+    async def get_receipt(request_id: str, principal: PrincipalDep) -> dict[str, Any]:
+        record = orchestrator.get(request_id, principal)  # owner or admin; others get 404
+        if record.receipt is None:
+            raise RequestNotFoundError(f"request {request_id!r} has no receipt yet")
+        return record.receipt.model_dump(mode="json")
+
+    @app.get("/receipts/public-key")
+    async def receipt_public_key() -> dict[str, Any]:
+        """Public: the key receipts are signed with, for offline verification."""
+        key = orchestrator.receipts.public_key if orchestrator.receipts else None
+        if key is None:
+            raise HTTPException(404, "receipts are not signed on this server")
+        return {"algorithm": "Ed25519", "key_id": key[1], "public_key_pem": key[0]}
+
+    @app.get("/admin/receipts")
+    async def list_receipts(principal: AdminDep, since: int = 0, limit: int = 500) -> dict[str, Any]:
+        """The receipt chain from ``since`` (exclusive), for audits: verify it with
+        ``python -m orchestrator verify-receipt --chain``."""
+        if orchestrator.receipts is None:
+            return {"receipts": []}
+        items = orchestrator.receipts.chain.since(since, min(max(limit, 1), 1000))
+        return {"receipts": [r.model_dump(mode="json") for r in items]}
 
     @app.get("/requests/{request_id}")
     async def get_request(request_id: str, principal: PrincipalDep) -> dict[str, Any]:

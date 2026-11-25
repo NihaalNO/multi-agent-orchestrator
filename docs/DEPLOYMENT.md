@@ -80,6 +80,8 @@ All settings are environment variables. Invalid values stop the server at startu
 | `ORCH_LLM_BASE_URL` | provider default | Groq/Ollama endpoint override, e.g. `http://gpu-box:11434/v1` for a remote Ollama or `https://ollama.com/v1` for Ollama's cloud |
 | `ORCH_MAX_REPLANS` | `1` | when a run fails because of the plan (code error, wrong field, bad input) on read/compute steps, show the planner the errors and result *shapes* and run its corrected plan, up to this many times. Costs one planner call each; `0` disables; never used for writes, permissions or approvals |
 | `ORCH_LLM_MAX_OUTPUT_TOKENS` | `4096` | Groq/Ollama output budget per plan, reasoning included. Groq counts it against your tokens-per-minute limit (8,000 on its on-demand tier), so prompt + budget must stay under that |
+| `ORCH_RECEIPTS` | `auto` | every finished request gets a hash-chained receipt (hashes, ids and statuses; no data). `off` disables them |
+| `ORCH_RECEIPT_KEY_PATH` | unset | Ed25519 private key (PEM) that signs receipts; create it with `python -m orchestrator receipt-key --out <path>`. Unset: receipts are chained but unsigned (startup warning) |
 | `ORCH_ANSWERS` | `auto` | grounded answers: after the tools run, the planner's provider writes an answer that cites the tool results and code checks every claim. `auto`: on for Groq/Ollama planners; `off`: deterministic summary only. Sends tool outputs (computed values, search snippets, file text; never raw CSV rows) to the provider |
 | `ORCH_LLM_JSON_MODE` | `auto` | Groq/Ollama output mode. `auto`: schema-enforced output where the provider supports it for the model (Groq: gpt-oss and a few others; local Ollama: any model), otherwise JSON mode with the schema in the instructions. `json_schema` / `json_object` force one |
 | `ORCH_LLM_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` (Anthropic only) |
@@ -142,6 +144,7 @@ PostgreSQL and Redis), deliberately deferred until it is needed.
 
 - [ ] TLS in front of the service; the container binds to localhost only.
 - [ ] Every API key generated with `hash-key --generate`; only hashes stored; placeholder hashes removed.
+- [ ] A receipt signing key (`receipt-key --out /config/receipt-key.pem`, mounted read-only, `ORCH_RECEIPT_KEY_PATH` set), kept out of backups that leave your control; publish `GET /receipts/public-key` to auditors. Keep `ORCH_STATE_PATH` set so the receipt chain survives restarts.
 - [ ] Grants are minimal; sensitive operations go through approvers who are not the requesters.
 - [ ] `.env` and the real `config/*.json` are not committed (both are gitignored).
 - [ ] **Python runs in the WebAssembly sandbox** (`ORCH_PYTHON_SANDBOX=wasm`, set in the Docker

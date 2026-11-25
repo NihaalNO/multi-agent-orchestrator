@@ -71,6 +71,10 @@ class Settings(BaseModel):
     # Grounded answers: after the tools run, the planner's provider writes an answer that cites
     # the tool results, and code checks every claim. "auto": on for Groq/Ollama planners.
     answers: Literal["auto", "off"] = "auto"
+    # Receipts: every finished request gets a hash-chained receipt; signed (Ed25519) when a key is
+    # configured (python -m orchestrator receipt-key --out <path>).
+    receipts: Literal["auto", "off"] = "auto"
+    receipt_key_path: Path | None = None
     llm_json_mode: Literal["auto", "json_schema", "json_object"] = Field(
         default="auto", description="Groq/Ollama structured-output mode; auto picks per provider and model."
     )
