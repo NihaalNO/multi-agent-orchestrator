@@ -54,13 +54,40 @@ class ProviderProfile:
     # hidden reasoning, so provider defaults can cut a plan off before the JSON is finished.
     max_tokens_param: str = "max_completion_tokens"
     notes: Mapping[str, str] = field(default_factory=dict)
+    # Generic endpoints: base URL from these env vars when ORCH_LLM_BASE_URL is unset.
+    base_url_env: tuple[str, ...] = ()
+    # Only these base-URL prefixes are known to enforce JSON Schemas and to take
+    # ``max_tokens_param``; anything else gets JSON mode and ``max_tokens``. None = no such split.
+    native_urls: tuple[str, ...] | None = None
+
+    def is_native(self, base_url: str) -> bool:
+        return self.native_urls is None or any(base_url.startswith(u) for u in self.native_urls)
 
     def json_mode(self, model: str, base_url: str) -> JsonMode:
-        if any(base_url.startswith(u) for u in self.json_object_only_urls):
+        if any(base_url.startswith(u) for u in self.json_object_only_urls) or not self.is_native(base_url):
             return "json_object"
         if self.schema_models is None or model in self.schema_models:
             return "json_schema"
         return "json_object"
+
+    def tokens_param(self, base_url: str) -> str:
+        return self.max_tokens_param if self.is_native(base_url) else "max_tokens"
+
+    def resolve_base_url(self, explicit: str | None, environ: Mapping[str, str] | None = None) -> str:
+        env = os.environ if environ is None else environ
+        if explicit:
+            return explicit
+        for var in self.base_url_env:
+            if env.get(var):
+                return env[var]
+        return self.base_url
+
+    def key_needed(self, base_url: str) -> bool:
+        """A local server (localhost, 127.0.0.1, ::1) usually takes no key; hosted ones do."""
+        from urllib.parse import urlsplit
+
+        host = (urlsplit(base_url).hostname or "").lower()
+        return self.key_required and host not in ("localhost", "127.0.0.1", "::1") and not host.endswith(".localhost")
 
     def api_key(self, explicit: str | None, environ: Mapping[str, str] | None = None) -> str | None:
         env = os.environ if environ is None else environ
@@ -98,6 +125,22 @@ PROVIDERS: dict[str, ProviderProfile] = {
         schema_models=None,           # local Ollama constrains output for any model
         json_object_only_urls=("https://ollama.com",),  # Ollama's cloud: no structured outputs
     ),
+    # Any server that speaks the OpenAI Chat Completions API: OpenAI itself, or a compatible
+    # gateway or local server (vLLM, LM Studio, OpenRouter, ...). There is no common model name,
+    # so ORCH_LLM_MODEL is required. Strict JSON Schemas and max_completion_tokens only on
+    # api.openai.com; other servers get JSON mode and max_tokens unless ORCH_LLM_JSON_MODE says otherwise.
+    "openai": ProviderProfile(
+        name="openai",
+        label="OpenAI-compatible",
+        base_url="https://api.openai.com/v1",
+        default_model="",
+        key_env=("OPENAI_API_KEY",),
+        base_url_env=("OPENAI_BASE_URL",),
+        placeholder_key=None,
+        schema_models=None,
+        strict=True,
+        native_urls=("https://api.openai.com",),
+    ),
 }
 
 
@@ -108,6 +151,9 @@ def openai_compat_error(exc: BaseException) -> tuple[Literal["config", "unavaila
         return "config", f"credentials rejected: {exc.message}"
     if isinstance(exc, openai.NotFoundError):
         return "config", f"model or endpoint not found (is the model pulled / the name right?): {exc.message}"
+    if isinstance(exc, openai.APIStatusError) and exc.status_code == 410:
+        # Gateways retire models but may keep listing them: say so, and how to fix it.
+        return "config", f"this model is no longer available (retired); set ORCH_LLM_MODEL to another: {exc.message}"
     if isinstance(exc, openai.APIStatusError) and exc.status_code == 413:
         # e.g. Groq: prompt + output budget exceed the account's tokens-per-minute limit. Retrying
         # cannot help; lower ORCH_LLM_MAX_OUTPUT_TOKENS or use a higher tier.
@@ -129,10 +175,11 @@ def make_openai_compat_client(profile: ProviderProfile, *, api_key: str | None =
         import openai
     except ImportError as exc:
         raise ConfigurationError(f"{profile.label} support is not installed; {INSTALL_HINT}") from exc
+    url = profile.resolve_base_url(base_url, environ)
     key = profile.api_key(api_key, environ)
-    if key is None and profile.key_required:
+    if key is None and profile.key_needed(url):
         raise ConfigurationError(f"no {profile.label} API key: set {' or '.join(profile.key_env)} (or ORCH_LLM_API_KEY)")
-    return openai.AsyncOpenAI(base_url=base_url or profile.base_url, api_key=key or "unused")
+    return openai.AsyncOpenAI(base_url=url, api_key=key or "unused")
 
 
 class OpenAICompatPlanner:
@@ -153,7 +200,10 @@ class OpenAICompatPlanner:
         self._profile = profile
         self._client = client
         self._model = model or profile.default_model
-        self._json_mode: JsonMode = json_mode or profile.json_mode(self._model, base_url or profile.base_url)
+        if not self._model:
+            raise ConfigurationError(f"{profile.label} planner needs a model name: set ORCH_LLM_MODEL")
+        self._base_url = profile.resolve_base_url(base_url)
+        self._json_mode: JsonMode = json_mode or profile.json_mode(self._model, self._base_url)
         self._timeout = timeout_s
         self._max_output_tokens = max_output_tokens
         self._audit = audit or AuditLog()
@@ -184,7 +234,7 @@ class OpenAICompatPlanner:
                          {"role": "user", "content": user_message(request, catalog, feedback)}],
             "response_format": response_format,
             "timeout": self._timeout,
-            self._profile.max_tokens_param: self._max_output_tokens,
+            self._profile.tokens_param(self._base_url): self._max_output_tokens,
         }
 
     async def _create_with_retry(self, kwargs: dict[str, Any]) -> Any:

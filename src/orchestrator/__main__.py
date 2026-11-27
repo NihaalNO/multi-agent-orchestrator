@@ -153,6 +153,8 @@ def check_config(settings: Settings, environ: dict[str, str] | None = None) -> t
             return bool(env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY"))
         return True
 
+    from urllib.parse import urlsplit
+
     planner = settings.llm_provider.lower()
     from orchestrator.routing.openai_compat_planner import PROVIDERS as COMPAT
 
@@ -166,8 +168,18 @@ def check_config(settings: Settings, environ: dict[str, str] | None = None) -> t
         except ImportError:
             errors.append(f"planner is {planner!r} but the openai package is not installed: "
                           "pip install 'multi-tool-orchestrator[openai-compat]'")
-        if profile.key_required and not profile.api_key(settings.api_key_for(planner), env):
+        url = profile.resolve_base_url(settings.llm_base_url, env)
+        if profile.key_needed(url) and not profile.api_key(settings.api_key_for(planner), env):
             errors.append(f"planner is {planner!r} but no key is set: set {' or '.join(profile.key_env)}")
+        if not (settings.planner_model or profile.default_model):
+            errors.append(f"planner is {planner!r} but no model is set: set ORCH_LLM_MODEL "
+                          "(the model name your endpoint serves)")
+        if planner == "openai" and urlsplit(url).path.strip("/") == "":
+            warnings.append(f"planner is 'openai' at {url}: the base URL has no path; most OpenAI-compatible APIs "
+                            f"live under /v1 (try {url.rstrip('/')}/v1).")
+        if planner == "openai" and not profile.is_native(url) and settings.llm_json_mode == "auto":
+            warnings.append(f"planner is 'openai' at {url}: plans use JSON mode with the schema in the instructions; "
+                            "set ORCH_LLM_JSON_MODE=json_schema if this server enforces JSON Schemas.")
         if planner == "ollama":
             url = settings.llm_base_url or profile.base_url
             warnings.append(f"planner is 'ollama': make sure an Ollama server is reachable at {url} and the model "
