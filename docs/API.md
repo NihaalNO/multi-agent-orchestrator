@@ -124,6 +124,34 @@ Progress carries names, statuses and timings only — never arguments, outputs, 
 ids; results come in the final record. A `: keep-alive` comment is sent after 15 s without events.
 Closing the stream does **not** cancel the request: fetch it later with `GET /requests/{id}`.
 
+### `POST /requests/{request_id}/replay`
+
+Run a finished request (`completed` or `failed`) **again** and compare every step with the original:
+"would this still give the same answer today?" Only the requester may replay (admins get `404`, as for
+resume); a request that never ran answers `409`.
+
+- The **stored plan** runs again; nothing is re-planned, so differences come from tools and data.
+- Each step runs **for real** (a fresh idempotency key: no cached results) under your **current**
+  permissions.
+- Only steps that read or compute run again. A step that writes or needs approval is **never
+  repeated**, nor anything depending on it; those come back as `not_rerun` with the reason.
+- The original record is not changed and the written answer is not re-written.
+
+```json
+{"request_id": "…", "replay_id": "…", "replayed_at": "…", "verdict": "differs",
+ "counts": {"identical": 1, "differs": 2, "failed": 0, "not_rerun": 0},
+ "steps": [{"task_id": "load_sales", "outcome": "differs", "original_status": "succeeded",
+            "replay_status": "succeeded", "original_sha256": "sha256:…", "replay_sha256": "sha256:…",
+            "changed": ["row_count", "rows.4.Revenue"], "original_ms": 9, "replay_ms": 5,
+            "note": "4 value(s) changed"}],
+ "receipt_matches_record": true, "policy_changed": false}
+```
+
+`verdict`: `identical` (every re-run step gave the same result), `differs`, or `incomplete` (a step
+failed or nothing could run again). Fields that change on every run anyway (retrieval time, timings,
+printed output) are ignored when comparing. `receipt_matches_record` / `policy_changed` compare the
+stored record with its receipt and today's policy with the one in force then (`null` without a receipt).
+
 ### `GET /requests/{request_id}/receipt`
 
 The request's **receipt** (owner or admin; others get `404`), issued when the request finishes, once
@@ -222,6 +250,7 @@ Delete a file you may delete. `404` if it does not exist. Deletions are audited 
 |---|---|
 | `GET /health` | `{"status": "ok", "version": "…"}` — public, for load balancers and container health checks |
 | `GET /ui`, `GET /ui/{name}` | the browser chat page and its `chat.css` / `chat.js` — public static files with a strict CSP; the page asks for your API key and calls the endpoints below. `GET /` redirects here |
+| `GET /ui/fonts/{name}` | the chat's self-hosted fonts (Public Sans, Barlow Condensed; SIL OFL, licenses beside them in `static/fonts/`), public, cached for a year |
 | `GET /me` | your user id and roles |
 | `GET /tools` | every registered tool with its spec and runtime state (`enabled`, `health`, `available`) |
 | `GET /tools?capability=web.search` | ranked `(tool, operation)` candidates for a capability |

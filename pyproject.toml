@@ -42,7 +42,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"orchestrator.api" = ["static/*"]
+"orchestrator.api" = ["static/*", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

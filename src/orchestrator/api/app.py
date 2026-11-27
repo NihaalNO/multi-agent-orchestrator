@@ -9,6 +9,7 @@ Files: PUT /files/{path} (raw body), GET /files, DELETE /files/{path} — see ``
 Request lifecycle over HTTP:
   POST /requests                 plan, route, authorize, execute, resolve; returns the record
   POST /requests/stream          the same, as server-sent events: live progress, then the record
+  POST /requests/{id}/replay     run the stored plan again and compare every step with the original
   GET  /requests/{id}            the record (owner or admin)
   POST /requests/{id}/resume     after approvals are decided, run what is left
 Status codes: 200 completed/failed, 202 awaiting approval, 4xx/5xx rejected (body is the record).
@@ -106,11 +107,23 @@ _UI_TYPES = {
 }
 _UI_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
-                               "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+                               "img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; "
+                               "frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-cache",
 }
+
+
+# Self-hosted fonts (SIL OFL; licenses beside them). Only these names are served.
+_UI_FONTS = {"public-sans-400.woff2", "public-sans-600.woff2", "public-sans-700.woff2", "barlow-condensed-600.woff2"}
+
+
+def _ui_font(name: str) -> Response:
+    if name not in _UI_FONTS:
+        raise HTTPException(404, "not found")
+    return Response((_UI_DIR / "fonts" / name).read_bytes(), media_type="font/woff2",
+                    headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "public, max-age=31536000, immutable"})
 
 
 def _ui_file(name: str) -> Response:
@@ -277,6 +290,10 @@ def create_app(
     async def chat_page() -> Response:
         return _ui_file("chat.html")
 
+    @app.get("/ui/fonts/{name}", include_in_schema=False)
+    async def chat_font(name: str) -> Response:
+        return _ui_font(name)
+
     @app.get("/ui/{name}", include_in_schema=False)
     async def chat_asset(name: str) -> Response:
         if name == "chat.html":
@@ -372,6 +389,12 @@ def create_app(
 
         return StreamingResponse(events(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/requests/{request_id}/replay")
+    async def replay_request(request_id: str, principal: PrincipalDep) -> dict[str, Any]:
+        """Run the stored plan again (read and compute steps only, under your current permissions)
+        and compare each step with the original. The original record is not changed."""
+        return (await orchestrator.replay(request_id, principal)).model_dump(mode="json")
 
     @app.get("/requests/{request_id}/receipt")
     async def get_receipt(request_id: str, principal: PrincipalDep) -> dict[str, Any]:

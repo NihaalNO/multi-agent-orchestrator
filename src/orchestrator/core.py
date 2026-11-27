@@ -25,7 +25,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -65,6 +65,9 @@ from orchestrator.tools import FileProcessingTool, SearchBackend, WebSearchTool
 from orchestrator.tools.python_exec import build_python_tool
 
 _log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:  # pragma: no cover
+    from orchestrator.replay import ReplayReport
 
 
 class RequestState(StrEnum):
@@ -442,6 +445,29 @@ class Orchestrator:
         self.audit.record("request.resumed", request_id=request_id, user_id=principal.user_id)
         return await self._execute(record, principal, time.perf_counter(), [], idempotency_key=idempotency_key,
                                    resume=True)
+
+    # ------------------------------------------------------------------ replay
+
+    async def replay(self, request_id: str, principal: Principal) -> "ReplayReport":
+        """Run a finished request's stored plan again and compare every step (see replay.py).
+        Only the requester may replay: admins may view others' requests, not act on them."""
+        from orchestrator.replay import replay_request
+
+        record = self.get(request_id, principal)
+        if record.user_id != principal.user_id:
+            raise RequestNotFoundError(f"request {request_id!r} not found")
+        if record.plan is None or record.report is None or record.state not in (RequestState.COMPLETED,
+                                                                                 RequestState.FAILED):
+            raise InvalidRequestStateError(
+                f"request is {record.state.value}; only requests that ran to the end can be replayed",
+                details={"state": record.state.value},
+            )
+        self.audit.record("request.replay_started", request_id=request_id, user_id=principal.user_id)
+        report = await replay_request(self, record, principal)
+        self.audit.record("request.replayed", request_id=request_id, user_id=principal.user_id,
+                          replay_id=report.replay_id, verdict=report.verdict, counts=report.counts,
+                          policy_changed=report.policy_changed, receipt_matches_record=report.receipt_matches_record)
+        return report
 
     # ------------------------------------------------------------------ internals
 

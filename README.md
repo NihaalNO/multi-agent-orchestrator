@@ -393,17 +393,26 @@ All 32 settings are documented in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#config
 Open **http://127.0.0.1:8000/** (it redirects to `/ui`) and paste your API key. The page is a thin
 client over the same endpoints shown below:
 
-- type a request in plain English; Enter sends, Shift+Enter adds a line;
-- follow-ups can build on earlier replies ("now double it"): the chat sends the last five as
-  `context`, and the plan references their results instead of retyping them; **New conversation**
-  starts over;
-- while it runs, the reply is a live checklist: the plan's steps, each one starting (◌) and finishing
-  (✓ / ✗ with its time), re-plans, and "writing the answer" (via `POST /requests/stream`);
-- attach a file with the paperclip — it is uploaded to `users/<your id>/` and listed with the request;
-- each reply shows the key results, the summary with its caveats, and the individual steps (plan,
-  outputs, errors) behind a "Steps" toggle;
-- web search results appear as a numbered list of sources: linked title, site, date and the quoted
-  snippet (only `http(s)` addresses become links);
+The design ("The Data Desk") borrows from business-paper data pages: a tinted paper ground, one
+sturdy sans (Public Sans) with tabular figures, and large condensed figures (Barlow Condensed), both
+self-hosted under `static/fonts/` (SIL OFL). Light and dark follow the system.
+
+- type a request in plain English, or start from one of the example prompts; Enter sends,
+  Shift+Enter adds a line; **Attach file** uploads to `users/<your id>/` for the next message;
+- the left rail lists this conversation's questions with their status; follow-ups build on earlier
+  replies ("now double it") — the chat sends the last five as `context`, and the plan references
+  their results instead of retyping them; **New conversation** starts over;
+- each reply leads with its result: a computed figure carries a **Source line** (its evidence key,
+  the step that produced it, and whether code checked it), then the answer with citation chips and
+  a verification line ("✓ 3 of 3 claims checked against the evidence"), gaps and caveats as
+  callouts, and the evidence list;
+- beside it, the **steps** stay after the run: each with its tool, time and a bar drawn to its
+  duration, expandable to its code, inputs and output, then the total, the **receipt** with
+  **Copy receipt** (the signed JSON, ready for `verify-receipt`) and **Replay steps**;
+- while it runs, the same steps panel fills in live (via `POST /requests/stream`), and a status
+  region announces each phase to screen readers;
+- the status never overstates: "Results ready · no written answer" when the answer could not be
+  written, plain-language reasons for rejections, with what the agent can do instead;
 - if a step needs approval, approvers get Approve / Deny buttons and then **Continue** resumes the request.
 
 The key is kept in the tab's `sessionStorage` only (cleared when the tab closes). The page is served
@@ -507,7 +516,14 @@ python -m orchestrator verify-receipt receipt.json --public-key pub.pem --record
 
 Editing one output in the record is reported (`step compute_average output: does NOT match the
 record`); removing or rewriting a receipt breaks the chain (`--chain`, from `GET /admin/receipts`).
-In the chat, each reply shows "Receipt #N · signed with key …" with a download button.
+In the chat, each reply shows "Receipt #N · signed with key …" with **Copy receipt**, which puts the
+signed receipt JSON on the clipboard.
+
+**Replay** (`POST /requests/{id}/replay`, the Replay button in the chat) runs a finished request's
+stored plan again — for real, under your current permissions, without re-planning — and compares
+every step with the original: *same*, *changed* (with the paths that changed, e.g.
+`rows.4.Revenue`), *failed*, or *not re-run* for steps with side effects, which are never repeated.
+It also says whether the record still matches its receipt and whether your permissions changed.
 
 ## Grounded answers: explainable responses
 

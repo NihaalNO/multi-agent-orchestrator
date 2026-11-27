@@ -185,7 +185,7 @@ they finish, and a follow-up can use an earlier result without leaking another u
 |---|---|---|
 | Every number linked to its source | 🟡 | grounded answers (`orchestrator/answers.py`): the LLM answer cites numbered evidence and code checks every number against it; unconfirmed claims are marked. Done for Groq/Ollama planners and verified live with Groq + Tavily; Anthropic/Gemini composers to follow |
 | Signed receipts | ✅ | `orchestrator/receipts.py`: per request hashes of question, policy, plan, each step's arguments and output, approvals with approver, answer and claim statuses; Ed25519-signed, chained by sequence + previous hash, stored in SQLite; `GET /requests/{id}/receipt`, `/receipts/public-key`, `/admin/receipts`; `verify-receipt` CLI. Verified live: a real Groq run's receipt verified offline, and an edited output was caught |
-| Replay | ⬜ | re-run a request from its receipt and compare outputs: audits, regression checks, "would this still give the same answer?" |
+| Replay | ✅ | `orchestrator/replay.py`, `POST /requests/{id}/replay`, chat Replay button: stored plan re-run under current permissions, side-effect steps never repeated, per-step identical / differs (with changed paths) / failed / not re-run, plus receipt and policy checks. Verified live: unchanged data replayed identically against Groq + Tavily; an edited upload was pinpointed (`rows.4.Revenue`, `result`) |
 
 Done when: the chat shows the source of every number, a receipt verifies offline, and a replay of
 an unchanged request reproduces its outputs.
