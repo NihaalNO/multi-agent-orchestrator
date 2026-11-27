@@ -48,6 +48,10 @@ def to_progress(event: AuditEvent) -> dict[str, Any] | None:
         return {"type": "replanning", "attempt": d.get("attempt"), "failed": sorted((d.get("failed") or {}).keys())}
     if k in ("conflict.detected", "conflict.resolved", "conflict.escalated"):
         return {"type": "conflict", "kind": d.get("conflict_kind"), "outcome": k.split(".", 1)[1]}
+    if k == "code.writing":
+        return {"type": "coding"}
+    if k == "code.written":
+        return {"type": "coded", "language": d.get("language"), "runnable": bool(d.get("runnable"))}
     if k == "answer.started":
         return {"type": "answering"}
     if k == "answer.composed":

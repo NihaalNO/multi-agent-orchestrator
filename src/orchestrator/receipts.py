@@ -97,17 +97,26 @@ class Receipt(BaseModel):
     steps: tuple[StepReceipt, ...] = ()
     answer: AnswerReceipt | None = None
     error: str | None = None
+    code_sha256: str | None = Field(default=None, description="Hash of a code answer's source, when there is one.")
     key_id: str | None = None
     signature: str | None = Field(default=None, description="Ed25519 over the canonical receipt without this field.")
 
+    def _dump(self, *, signature: bool) -> dict[str, Any]:
+        data = self.model_dump(mode="json", exclude=None if signature else {"signature"})
+        # Fields added after version 1 enter the signed and hashed content only when set, so receipts
+        # issued before they existed keep verifying and the chain stays intact.
+        if data.get("code_sha256") is None:
+            data.pop("code_sha256", None)
+        return data
+
     def body(self) -> dict[str, Any]:
         """What is signed: everything except the signature."""
-        return self.model_dump(mode="json", exclude={"signature"})
+        return self._dump(signature=False)
 
     @property
     def receipt_sha256(self) -> str:
         """The chain link: hash of the full receipt, signature included."""
-        return digest(self.model_dump(mode="json"))
+        return digest(self._dump(signature=True))
 
 
 # --------------------------------------------------------------------------------- building
@@ -253,6 +262,7 @@ class ReceiptIssuer:
                 policy_sha256=policy_digest(self._grants()), plan_sha256=plan_digest(record),
                 steps=step_receipts(record, self._approver), answer=answer_digests(record),
                 error=record.error.code if record.error else None,
+                code_sha256=digest(record.code.code) if getattr(record, "code", None) is not None else None,
                 key_id=self.signer.key_id if self.signer else None,
             )
             if self.signer:
@@ -315,6 +325,8 @@ def verify_against_record(receipt: Receipt, record: dict[str, Any]) -> list[Find
     extra = set(recorded) - {s.task_id for s in receipt.steps}
     if extra:
         findings.append(Finding(level="error", message=f"record has steps the receipt does not: {sorted(extra)}"))
+    if receipt.code_sha256 is not None or rec.code is not None:
+        check("code", receipt.code_sha256, digest(rec.code.code) if rec.code is not None else None)
     mine_answer = answer_digests(rec)
     check("answer", receipt.answer.model_dump() if receipt.answer else None,
           mine_answer.model_dump() if mine_answer else None)

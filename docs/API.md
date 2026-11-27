@@ -53,6 +53,7 @@ Plan, route, authorize, execute and reconcile a natural-language request.
 | `text` | 1–20,000 characters. Treated as untrusted data by the planner. |
 | `files` | Names of uploaded files (see [Files](#files)) that the request may use. |
 | `allow_partial` | `true`: run the parts that can be routed and report the rest as caveats. `false` (default): reject the whole request if any part cannot be routed. |
+| `mode` | `auto` (default): a request that asks for code ("write a Python function that…") is answered with code, anything else with a plan. `code`: always answer with code. `task`: never. A code answer is in `code` (`language`, `filename`, `code`, `explanation`, `runnable`, `syntax_ok`, `syntax_error`, `run_note`, `composer`, `model`); Python that compiles runs as step `run_code` through the normal permission check, its output in `report`. `code` needs a Groq, Ollama or OpenAI-compatible planner, otherwise the request is rejected. |
 | `context` | Up to 5 ids of **your own completed** earlier requests, oldest first: a follow-up ("now double it") can use their results. They become `R1`, `R2`…; the planner sees their questions, answers and output shapes, and references values with `{"$ref": "@R1.<task_id>.<path>"}`, resolved from the stored record when the step runs. Another user's id (admins included) answers `404` like a missing one; an unfinished or failed request answers `409`. |
 
 Optional header **`Idempotency-Key`** (≤ 200 chars): re-sending the same key (same user) returns
@@ -159,7 +160,7 @@ approvals are settled. It holds hashes, ids and statuses — never data — so i
 `sequence` and `previous` (the hash of the previous receipt: the chain), `question_sha256`,
 `policy_sha256`, `plan_sha256`, one entry per step (`status`, `args_sha256` of the exact arguments
 that ran, `output_sha256`, `approval_id`, `approved_by`, times), the answer's text and evidence
-hashes with each claim's status, `context` (receipt hashes of earlier requests a follow-up used),
+hashes with each claim's status, `code_sha256` (code answers only), `context` (receipt hashes of earlier requests a follow-up used),
 and `key_id` + `signature` (Ed25519 over the receipt without the signature) when the server has a key.
 
 Check it offline: `python -m orchestrator verify-receipt receipt.json --public-key pub.pem --record record.json`
