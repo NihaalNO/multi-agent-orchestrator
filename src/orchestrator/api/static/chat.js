@@ -244,6 +244,11 @@ function setRail(turn, tone) {
 // One honest status: never green when what the user asked for did not arrive.
 function outcome(record) {
   const partial = record.report && record.report.status === "partial";
+  if (record.code && record.state === "completed") {
+    const run = codeRun(record);
+    if (!run) return ["ok", "Code written", "not run"];
+    return run.status === "succeeded" ? ["ok", "Code written", "ran in the sandbox"] : ["warn", "Code written", "its run failed"];
+  }
   switch (record.state) {
     case "completed":
       if (record.answer_note) return ["warn", "Results ready", "no written answer"];
@@ -417,6 +422,129 @@ function highlights(record) {
   return box.childElementCount ? box : null;
 }
 
+// ------------------------------------------------------------------ code answers: console windows
+
+// A light tokenizer per language family: comments, strings, numbers and keywords. Every token is
+// a text node inside a span; nothing is ever parsed as HTML.
+const KW = {
+  python: "False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield match case self print",
+  c: "auto break case char const continue default do double else enum extern float for goto if int long register return short signed sizeof static struct switch typedef union unsigned void volatile while include define bool true false null nullptr class public private protected virtual new delete this namespace using template typename",
+  js: "async await break case catch class const continue debugger default delete do else export extends false finally for function if import in instanceof let new null return super switch this throw true try typeof undefined var void while with yield of interface type enum implements readonly as from public private protected",
+  java: "abstract boolean break byte case catch char class const continue default do double else enum extends final finally float for if implements import instanceof int interface long new null package private protected public return short static super switch this throw throws true false try void while var record",
+  go: "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil",
+  rust: "as async await break const continue crate else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while",
+  sql: "select from where and or not insert into values update set delete create table drop alter join left right inner outer on group by order having limit offset as distinct union all null is in between like case when then else end primary key foreign references index view count sum avg min max",
+  shell: "if then else elif fi for while do done case esac in function return local export echo exit set unset readonly shift",
+};
+const FAMILY = {
+  python: ["python", "#", null, KW.python], py: ["python", "#", null, KW.python],
+  javascript: ["js", "//", ["/*", "*/"], KW.js], typescript: ["js", "//", ["/*", "*/"], KW.js], js: ["js", "//", ["/*", "*/"], KW.js], ts: ["js", "//", ["/*", "*/"], KW.js],
+  java: ["java", "//", ["/*", "*/"], KW.java], kotlin: ["java", "//", ["/*", "*/"], KW.java], csharp: ["java", "//", ["/*", "*/"], KW.java], "c#": ["java", "//", ["/*", "*/"], KW.java],
+  c: ["c", "//", ["/*", "*/"], KW.c], cpp: ["c", "//", ["/*", "*/"], KW.c], "c++": ["c", "//", ["/*", "*/"], KW.c],
+  go: ["go", "//", ["/*", "*/"], KW.go], rust: ["rust", "//", ["/*", "*/"], KW.rust],
+  sql: ["sql", "--", ["/*", "*/"], KW.sql], bash: ["shell", "#", null, KW.shell], shell: ["shell", "#", null, KW.shell], sh: ["shell", "#", null, KW.shell],
+  powershell: ["shell", "#", ["<#", "#>"], KW.shell],
+};
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function tokenize(code, language) {
+  const fam = FAMILY[(language || "").toLowerCase()];
+  if (!fam) return [["", code]];
+  const [name, line, block, words] = fam;
+  const kw = new Set(words.split(" ").map((w) => (name === "sql" ? w.toLowerCase() : w)));
+  const parts = [];
+  if (block) parts.push(`${esc(block[0])}[\\s\\S]*?(?:${esc(block[1])}|$)`);
+  parts.push(`${esc(line)}[^\\n]*`);
+  const strings = name === "python" ? [`"""[\\s\\S]*?(?:"""|$)`, `'''[\\s\\S]*?(?:'''|$)`] : [];
+  strings.push(`"(?:\\\\.|[^"\\\\\\n])*"?`, `'(?:\\\\.|[^'\\\\\\n])*'?`);
+  if (name === "js" || name === "go" || name === "shell") strings.push("`(?:\\\\.|[^`\\\\])*`?");
+  const re = new RegExp(`(${parts.join("|")})|(${strings.join("|")})|(\\b\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b)|([A-Za-z_][\\w]*)`, "g");
+  const out = [];
+  let last = 0;
+  for (const m of code.matchAll(re)) {
+    if (m.index > last) out.push(["", code.slice(last, m.index)]);
+    const type = m[1] ? "com" : m[2] ? "str" : m[3] ? "num" : kw.has(name === "sql" ? m[4].toLowerCase() : m[4]) ? "kw" : "";
+    out.push([type, m[0]]);
+    last = m.index + m[0].length;
+  }
+  if (last < code.length) out.push(["", code.slice(last)]);
+  return out;
+}
+
+function codeLines(code, language) {
+  const codeEl = el("code", {});
+  let line = el("span", { class: "line" });
+  for (const [type, text] of tokenize(code, language)) {
+    const pieces = text.split("\n");
+    pieces.forEach((piece, i) => {
+      if (i > 0) { codeEl.append(line); line = el("span", { class: "line" }); }
+      if (piece) line.append(type ? el("span", { class: `tok-${type}`, text: piece }) : piece);
+    });
+  }
+  codeEl.append(line);
+  return codeEl;
+}
+
+function copyButton(label, getText) {
+  const done = el("span", { class: "copied", role: "status" });
+  const button = el("button", { type: "button", class: "btn small", text: label, onclick: async () => {
+    const ok = await copyText(getText());
+    done.textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { done.textContent = ""; }, 2000);
+  } });
+  return [button, done];
+}
+
+const LANG_NAMES = { javascript: "JavaScript", typescript: "TypeScript", csharp: "C#", cpp: "C++", sql: "SQL", php: "PHP", html: "HTML", css: "CSS", powershell: "PowerShell" };
+function languageName(l) { return LANG_NAMES[l] || humanize(l); }
+
+function codeRun(record) {
+  return ((record.report && record.report.task_results) || []).find((r) => r.task_id === "run_code") || null;
+}
+
+function codeAnswer(record) {
+  const c = record.code;
+  const parts = [];
+  if (c.explanation) parts.push(el("p", { class: "explanation", text: c.explanation }));
+  const lines = c.code.split("\n").length;
+  const [copy, copied] = copyButton("Copy code", () => c.code);
+  const window_ = el("figure", { class: "console", "aria-label": `${c.filename}, ${languageName(c.language)} code` },
+    el("div", { class: "console-bar" },
+      el("span", { class: "file", text: c.filename }), el("span", { class: "lang", text: languageName(c.language) }),
+      el("span", { class: "dim", text: plural(lines, "line") }),
+      c.syntax_ok === true ? el("span", { class: "dim", text: "✓ compiles" }) : null,
+      c.syntax_ok === false ? el("span", { class: "run-bad", text: `Syntax error, ${c.syntax_error}` }) : null,
+      el("span", { class: "spacer" }), copied, copy),
+    el("pre", { class: "console-code", tabindex: "0" }, codeLines(c.code, c.language)));
+  parts.push(window_);
+
+  // The output console: what the program printed when it ran in the sandbox, or why it did not run.
+  const run = codeRun(record);
+  const bar = el("div", { class: "console-bar" }, el("span", { class: "file", text: "Output" }));
+  const out = el("section", { class: "console", "aria-label": "Program output" }, bar);
+  if (!run) {
+    bar.append(el("span", { class: "dim", text: "not run" }));
+    out.append(el("p", { class: "console-note", text: c.run_note || "This code was not run." }));
+  } else {
+    const ms = stepMs(run);
+    const okRun = run.status === "succeeded";
+    bar.append(el("span", { class: okRun ? "run-ok" : "run-bad", text: okRun ? "✓ ran in the sandbox" : `✗ ${humanize(run.status)}` }),
+      ms != null ? el("span", { class: "dim", text: seconds(ms) }) : null);
+    const stdout = (run.output && run.output.stdout) || (run.error && run.error.details && run.error.details.stdout) || "";
+    const stderr = run.error ? ((run.error.details && run.error.details.traceback) || run.error.message || run.error.code) : "";
+    if (stdout) {
+      const [copyOut, copiedOut] = copyButton("Copy output", () => stdout);
+      bar.append(el("span", { class: "spacer" }), copiedOut, copyOut);
+    }
+    out.append(el("pre", { class: `console-out${stdout ? "" : " empty"}`, text: stdout || (okRun ? "(the program printed nothing)" : "") }));
+    if (stderr) out.append(el("pre", { class: "console-out err", text: stderr }));
+    if (run.output && run.output.result != null) out.append(el("p", { class: "console-note", text: `result = ${formatValue(run.output.result)}` }));
+  }
+  parts.push(out);
+  if (c.model) parts.push(el("p", { class: "note-line", text: `Written by ${c.model}${run ? "; run by the orchestrator in the WebAssembly sandbox" : ""}.` }));
+  return parts;
+}
+
 // ------------------------------------------------------------------ the trace (kept after the run)
 
 const TOOL_WORDS = {
@@ -526,9 +654,11 @@ async function renderRecord(turn, record, status) {
     main.append(el("div", { class: "callout bad" }, el("strong", { text: plainError(record.error) }),
       el("p", { text: [can || "", "Try rephrasing, or ask about an uploaded file or the web."].filter(Boolean).join(" ") })));
   }
-  const figure = headlineFigure(record, anchor);
+  const figure = record.code ? null : headlineFigure(record, anchor);
   if (figure) main.append(figure);
-  if (record.answer) {
+  if (record.code) {
+    main.append(...codeAnswer(record));
+  } else if (record.answer) {
     main.append(...groundedAnswer(record.answer, record.request_id));
   } else {
     if (record.answer_note) {
@@ -781,6 +911,8 @@ function progressView(turn) {
         list.append(el("li", { class: "divider", text: "Revised plan" }));
         rows = new Map();
         break;
+      case "coding": setPhase("Writing the code"); break;
+      case "coded": setPhase(msg.runnable ? `Running the ${languageName(msg.language || "")} code in the sandbox` : "Code written"); break;
       case "answering": setPhase("Writing the answer from the results"); break;
       case "finished": setPhase("Done"); break;
     }
@@ -800,7 +932,7 @@ async function send(text) {
   try {
     const context = state.history.slice(-MAX_CONTEXT);
     const { status, data } = await streamRequest(
-      { text, files, allow_partial: $("partial").checked, context }, { "Idempotency-Key": newId() },
+      { text, files, allow_partial: $("partial").checked, context, mode: currentMode() }, { "Idempotency-Key": newId() },
       (msg) => view.update(msg));
     view.stop();
     if (context.length && (status === 404 || status === 409) && !(data && data.state)) {
@@ -833,6 +965,19 @@ function autosize() {
 
 function newConversation() { resetConversation(); $("text").focus(); }
 
+// "Ask" lets the server decide (tools and an answer, or code when the request asks for code);
+// "Code" always answers with code in a console window.
+function currentMode() {
+  const picked = document.querySelector('input[name="mode"]:checked');
+  return picked && picked.value === "code" ? "code" : "auto";
+}
+
+function applyMode() {
+  $("text").placeholder = currentMode() === "code"
+    ? "Describe the code you need: the language and what it should do"
+    : "Ask about your files or the web";
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   $("signin-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -855,6 +1000,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("new-conversation").addEventListener("click", newConversation);
   $("new-conversation-top").addEventListener("click", newConversation);
   $("attach").addEventListener("click", () => $("file").click());
+  for (const radio of document.querySelectorAll('input[name="mode"]')) radio.addEventListener("change", () => { applyMode(); $("text").focus(); });
   $("file").addEventListener("change", (ev) => { for (const f of ev.target.files) attach(f); ev.target.value = ""; });
   $("text").addEventListener("input", autosize);
   $("text").addEventListener("keydown", (ev) => {

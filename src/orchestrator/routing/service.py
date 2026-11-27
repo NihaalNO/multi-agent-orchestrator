@@ -82,6 +82,25 @@ class RoutingService:
         self._permissions = permissions
         self._audit = audit or AuditLog()
 
+    def route_proposal(self, proposal: PlanProposal, principal: Principal, *, request_id: str,
+                       allow_partial: bool = False) -> "RoutingOutcome":
+        """Route and authorize a plan built by code rather than the planner (for example running
+        generated code): the same router, candidate filter and authorization as a planned request."""
+        self._audit.record("planner.proposal", request_id=request_id, user_id=principal.user_id,
+                           planner=proposal.planner, tasks=[t.task_id for t in proposal.plan.tasks] if proposal.plan else [],
+                           unsupported=list(proposal.unsupported))
+        router = CapabilityRouter(
+            self._registry, self._audit, candidate_filter=self._permissions.candidate_filter(principal)
+        )
+        routed = router.route(proposal, allow_partial=allow_partial)
+        authorization = self._permissions.authorize_plan(principal, routed, request_id=request_id)
+        if not authorization.allowed:
+            raise PermissionDeniedError(
+                "plan contains operations the user is not permitted to perform",
+                details={"denied": {t: authorization.decisions[t].reason for t in authorization.denied}},
+            )
+        return RoutingOutcome(proposal=proposal, routed=routed, authorization=authorization)
+
     def _file_columns(self, request: PlanningRequest, principal: Principal) -> dict[str, tuple[str, ...]]:
         """Column names of the CSVs this request refers to (listed files, plus ``.csv`` paths named
         in its text) that the principal may read with the file tool. Header only — no data values —

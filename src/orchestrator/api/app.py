@@ -23,7 +23,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated, Any, AsyncIterator
+from typing import Annotated, Any, AsyncIterator, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
@@ -147,6 +147,8 @@ class SubmitBody(BaseModel):
     # Earlier requests of this conversation (your own, completed), oldest first: follow-ups can use
     # their results ("now double it"). See Orchestrator.submit.
     context: list[str] = Field(default_factory=list, max_length=5)
+    # "auto": code answers for requests that ask for code; "code": always; "task": never.
+    mode: Literal["auto", "code", "task"] = "auto"
 
 
 def _record_response(record: RequestRecord) -> JSONResponse:
@@ -335,6 +337,7 @@ def create_app(
         record = await orchestrator.submit(
             body.text, principal, files=tuple(body.files),
             idempotency_key=idempotency_key, allow_partial=body.allow_partial, context=tuple(body.context),
+            mode=body.mode,
         )
         return _record_response(record)
 
@@ -352,6 +355,7 @@ def create_app(
         task = asyncio.create_task(orchestrator.submit(
             body.text, principal, files=tuple(body.files), idempotency_key=idempotency_key,
             allow_partial=body.allow_partial, request_id=request_id, context=tuple(body.context),
+            mode=body.mode,
         ))
         background.add(task)
         task.add_done_callback(background.discard)

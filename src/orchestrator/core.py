@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from orchestrator.answers import Answer, AnswerComposer, build_composer, compose_answer, earlier_evidence
+from orchestrator.coding import CodeAnswer, CodeWriter, build_code_writer, latest_code, wants_code
 from orchestrator.config import Settings
 from orchestrator.receipts import Receipt, ReceiptChain, ReceiptIssuer, Signer
 from orchestrator.contracts import (
@@ -51,6 +52,7 @@ from orchestrator.errors import (
     InvalidRequestStateError,
     NoMatchingToolError,
     OrchestratorError,
+    PermissionDeniedError,
     RequestNotFoundError,
 )
 from orchestrator.execution import DagScheduler, ExecutionEngine
@@ -60,7 +62,7 @@ from orchestrator.observability.audit import AuditLog
 from orchestrator.permissions import ApprovalManager, PermissionManager, PlanAuthorization
 from orchestrator.registry.registry import ToolRegistry
 from orchestrator.resolution import ConflictResolver
-from orchestrator.routing import Planner, RoutingService, build_planner
+from orchestrator.routing import Planner, RoutingService, build_planner, build_proposal
 from orchestrator.tools import FileProcessingTool, SearchBackend, WebSearchTool
 from orchestrator.tools.python_exec import build_python_tool
 
@@ -155,6 +157,7 @@ class RequestRecord(BaseModel):
     answer: Answer | None = None      # grounded answer written from the tool results (see answers.py)
     answer_note: str = ""              # why there is no answer, when one was expected
     receipt: Receipt | None = None    # signed, hash-chained proof of this run (see receipts.py)
+    code: CodeAnswer | None = None    # a code answer (see coding.py); its run, if any, is the plan
 
     @property
     def pending_approvals(self) -> dict[str, str]:
@@ -303,10 +306,12 @@ class Orchestrator:
         idempotency_backend: IdempotencyBackend | None = None,
         composer: AnswerComposer | None = None,
         receipts: ReceiptIssuer | None = None,
+        code_writer: CodeWriter | None = None,
     ) -> None:
         self.settings = settings or Settings()
         self.composer = composer
         self.receipts = receipts
+        self.code_writer = code_writer
         self.registry = registry
         self.permissions = permissions
         self.approvals = approvals
@@ -335,6 +340,7 @@ class Orchestrator:
         receipt_chain: ReceiptChain | None = None,
     ) -> "Orchestrator":
         composer = build_composer(settings) if planner is None else None
+        code_writer = build_code_writer(settings) if planner is None else None
         receipts = None
         if settings.receipts != "off":
             signer = Signer(settings.receipt_key_path) if settings.receipt_key_path else None
@@ -342,7 +348,7 @@ class Orchestrator:
                                      approver=_approver(approvals))
         return cls(registry, planner or build_planner(settings, audit), permissions, approvals, audit,
                    settings=settings, store=store, idempotency_backend=idempotency_backend, composer=composer,
-                   receipts=receipts)
+                   receipts=receipts, code_writer=code_writer)
 
     # ------------------------------------------------------------------ queries
 
@@ -364,6 +370,7 @@ class Orchestrator:
         allow_partial: bool = False,
         request_id: str | None = None,
         context: Sequence[str] = (),
+        mode: str = "auto",
     ) -> RequestRecord:
         """``request_id`` lets a caller choose the id up front (the streaming API subscribes to its
         progress before the request starts); by default one is generated."""
@@ -391,6 +398,9 @@ class Orchestrator:
                           files=list(request.files), context=list(context))
         started = time.perf_counter()
         stages: list[StageTiming] = []
+
+        if mode == "code" or (mode == "auto" and self.code_writer is not None and wants_code(text)):
+            return await self._code(record, principal, started, stages, turns, idempotency_key)
 
         t = time.perf_counter()
         try:
@@ -446,6 +456,57 @@ class Orchestrator:
         return await self._execute(record, principal, time.perf_counter(), [], idempotency_key=idempotency_key,
                                    resume=True)
 
+    # ------------------------------------------------------------------ code answers
+
+    async def _code(self, record: RequestRecord, principal: Principal, started: float, stages: list[StageTiming],
+                    turns: list[tuple[str, RequestRecord]], idempotency_key: str | None) -> RequestRecord:
+        """A request whose answer is code (see coding.py). Runnable Python then runs as an ordinary
+        one-step plan: routed, permission-checked, executed, audited and receipted."""
+        t = time.perf_counter()
+        if self.code_writer is None:
+            stages.append(StageTiming(stage="write_code", duration_ms=self._ms(t)))
+            return self._finish(record, started, stages, state=RequestState.REJECTED, error=ErrorInfo(
+                code="configuration_error",
+                message="Code answers need a Groq, Ollama or OpenAI-compatible planner."))
+        self.audit.record("code.writing", request_id=record.request_id, user_id=principal.user_id,
+                          writer=self.code_writer.name)
+        try:
+            code = await self.code_writer.write(record.text, latest_code([r for _, r in turns]))
+        except OrchestratorError as exc:
+            stages.append(StageTiming(stage="write_code", duration_ms=self._ms(t)))
+            return self._finish(record, started, stages, state=RequestState.REJECTED, error=ErrorInfo.from_exception(exc))
+        except Exception as exc:  # provider errors: reported, never leaving the request RUNNING
+            stages.append(StageTiming(stage="write_code", duration_ms=self._ms(t)))
+            return self._finish(record, started, stages, state=RequestState.REJECTED, error=ErrorInfo(
+                code="code_writer_failed", message=f"The code could not be written ({type(exc).__name__})."))
+        stages.append(StageTiming(stage="write_code", duration_ms=self._ms(t)))
+        self.audit.record("code.written", request_id=record.request_id, user_id=principal.user_id,
+                          language=code.language, runnable=code.runnable, syntax_ok=code.syntax_ok,
+                          lines=code.code.count("\n") + 1)
+        record = record.model_copy(update={"code": code, "planner": self.code_writer.name})
+        if not (code.is_python and code.runnable and code.syntax_ok):
+            return self._finish(record, started, stages, state=RequestState.COMPLETED)
+
+        proposal = build_proposal(request_id=record.request_id, planner=self.code_writer.name, rationale="run the written code",
+                                  tasks=[{"task_id": "run_code", "description": f"Run {code.filename} in the sandbox",
+                                          "capability": "code.python.execute",
+                                          "inputs": {"code": code.code, "inputs": {}}}])
+        t = time.perf_counter()
+        try:
+            outcome = self.routing.route_proposal(proposal, principal, request_id=record.request_id)
+        except OrchestratorError as exc:
+            stages.append(StageTiming(stage="route_authorize", duration_ms=self._ms(t)))
+            denied = isinstance(exc, (PermissionDeniedError, NoMatchingToolError))
+            note = "Not run: you don't have permission to run code." if denied else f"Not run: {exc.message}"
+            record = record.model_copy(update={"code": code.model_copy(update={"run_note": note})})
+            return self._finish(record, started, stages, state=RequestState.COMPLETED)
+        stages.append(StageTiming(stage="route_authorize", duration_ms=self._ms(t)))
+        record = record.model_copy(update={
+            "plan": outcome.routed.plan, "routing": outcome.routed.decisions, "unrouted": outcome.routed.unrouted,
+            "unsupported": outcome.routed.unsupported, "authorization": outcome.authorization,
+        })
+        return await self._execute(record, principal, started, stages, idempotency_key=idempotency_key)
+
     # ------------------------------------------------------------------ replay
 
     async def replay(self, request_id: str, principal: Principal) -> "ReplayReport":
@@ -482,6 +543,8 @@ class Orchestrator:
                                                             idempotency_key=idempotency_key, allow_partial=allow_partial)
             runs += extra_runs
         state = _state_for(report)
+        if record.code is not None and state == RequestState.FAILED:
+            state = RequestState.COMPLETED  # the code was delivered; its failed run is shown, not hidden
         answer_fields = await self._answer(record, report, state, stages)
         return self._finish(record, started, stages, state=state, report=report,
                             executions=record.executions + runs, **answer_fields)
@@ -490,7 +553,7 @@ class Orchestrator:
                       stages: list[StageTiming]) -> dict[str, Any]:
         """Stage 11: a grounded answer from the results. Never fails the request: a composer error
         leaves the deterministic summary as the response and says why."""
-        if self.composer is None or state != RequestState.COMPLETED:
+        if self.composer is None or state != RequestState.COMPLETED or record.code is not None:
             return {}
         t = time.perf_counter()
         self.audit.record("answer.started", request_id=record.request_id, composer=self.composer.name)

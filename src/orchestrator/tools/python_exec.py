@@ -50,7 +50,7 @@ _RUNNER = r"""
 import contextlib, io, json, sys, traceback
 payload = json.loads(sys.stdin.read())
 buf = io.StringIO()
-ns = {"inputs": payload["inputs"], "result": None, "__name__": "__orch__"}
+ns = {"inputs": payload["inputs"], "result": None, "__name__": "__main__"}
 status = {"ok": True}
 try:
     with contextlib.redirect_stdout(buf):

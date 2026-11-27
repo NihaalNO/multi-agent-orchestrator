@@ -31,15 +31,16 @@ cross-checks the results, and returns one consolidated answer — with every dec
 10. [Built-in tools](#built-in-tools)
 11. [Receipts: proof of what ran](#receipts-proof-of-what-ran)
 12. [Grounded answers: explainable responses](#grounded-answers-explainable-responses)
-13. [Trustworthy results: conflicts and caveats](#trustworthy-results-conflicts-and-caveats)
-14. [Reliability: retries, duplicates, restarts](#reliability-retries-duplicates-restarts)
-15. [Observability](#observability)
-16. [Extending the orchestrator](#extending-the-orchestrator)
-17. [Examples](#examples)
-18. [Testing and CI](#testing-and-ci)
-19. [Project structure](#project-structure)
-20. [Status and known limitations](#status-and-known-limitations)
-21. [Documentation](#documentation)
+13. [Code answers: a console for code](#code-answers-a-console-for-code)
+14. [Trustworthy results: conflicts and caveats](#trustworthy-results-conflicts-and-caveats)
+15. [Reliability: retries, duplicates, restarts](#reliability-retries-duplicates-restarts)
+16. [Observability](#observability)
+17. [Extending the orchestrator](#extending-the-orchestrator)
+18. [Examples](#examples)
+19. [Testing and CI](#testing-and-ci)
+20. [Project structure](#project-structure)
+21. [Status and known limitations](#status-and-known-limitations)
+22. [Documentation](#documentation)
 
 ---
 
@@ -419,6 +420,11 @@ self-hosted under `static/fonts/` (SIL OFL). Light and dark follow the system.
   region announces each phase to screen readers;
 - the status never overstates: "Results ready · no written answer" when the answer could not be
   written, plain-language reasons for rejections, with what the agent can do instead;
+- **Ask | Code** under the message box: *Ask* lets the agent decide (a request for code, such as
+  "write a Python function that…", is answered as code); *Code* always answers with code. Code
+  comes in a console window: file name, language, line numbers, syntax colours, **Copy code**, and
+  for Python an **Output** console with what the sandbox printed (see
+  [Code answers](#code-answers-a-console-for-code));
 - if a step needs approval, approvers get Approve / Deny buttons and then **Continue** resumes the request.
 
 The key is kept in the tab's `sessionStorage` only (cleared when the tab closes). The page is served
@@ -551,6 +557,30 @@ lists every claim with its mark (opened automatically when something is unconfir
 shown, not papered over. If writing the answer fails, the request still succeeds with the
 deterministic summary and says why. The audit log records counts only (`answer.composed`), never the
 answer text. Anthropic and Gemini planners keep the deterministic summary for now.
+
+## Code answers: a console for code
+
+When a request asks for code as its answer ("write a Python function that checks for palindromes",
+"give me a SQL query that…", "implement binary search in Rust"), it gets its own path instead of a
+tool plan. The chat's **Code** switch (API: `"mode": "code"`) forces it; `"mode": "task"` never
+uses it; `"auto"` (the default) decides with a strict pattern, so "calculate the average revenue
+using Python" is still an analysis, not a code request.
+
+1. **The LLM writes the code** as structured output: language, file name, the code, a short
+   explanation and whether it can run as is. A follow-up ("now add type hints") gets the earlier
+   code as data.
+2. **Code checks it**: Markdown fences are removed; Python is compiled (no run) and a syntax error
+   is shown with its line; other languages are shown, not run.
+3. **Python that compiles runs the normal way**: a one-step plan (`code.python.execute`) goes through
+   the router, the permission check and the WebAssembly sandbox, exactly like a planned step. A user
+   without permission to run code still gets the code, marked "Not run". A failing run is shown with
+   its traceback; the request still completes, because the code was delivered.
+
+The chat shows the code in a console window (always dark, line numbers, syntax colours, **Copy
+code**) and Python's output in a second console (**Copy output**, time, traceback on failure). The
+receipt adds `code_sha256`, the hash of the code shown; receipts issued before this field existed
+still verify. The audit log records the language and line count (`code.written`), never the code.
+Code answers need a Groq, Ollama or OpenAI-compatible planner for now.
 
 ---
 
@@ -698,6 +728,7 @@ src/orchestrator/
 ├── tools/          file processing, Python execution, web search (+ search backends)
 ├── observability/  audit log, metrics, JSON logging
 ├── core.py         the orchestrator: lifecycle, request records, resume
+├── coding.py       code answers: detection, the code writer, deterministic checks
 ├── state.py        durable state in SQLite
 ├── uploads.py      file uploads
 ├── config.py       settings (ORCH_* environment variables)

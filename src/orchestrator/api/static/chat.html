@@ -50,6 +50,7 @@
             <button type="button" class="example" data-prompt="Read users/{user}/sales.csv and calculate its average revenue using Python."><span class="k">1</span><span>Read <span data-user>you</span>’s sales.csv and calculate its average revenue using Python</span></button>
             <button type="button" class="example" data-prompt="Search the web for the latest SaaS revenue growth benchmarks."><span class="k">2</span><span>Search the web for the latest SaaS revenue growth benchmarks</span></button>
             <button type="button" class="example" data-prompt="Now double it using Python."><span class="k">3</span><span>Then a follow-up that builds on the last answer: “Now double it using Python”</span></button>
+            <button type="button" class="example" data-prompt="Write a Python function that checks whether a string is a palindrome, ignoring case and punctuation, and show it on a few examples."><span class="k">4</span><span>Or ask for code: “Write a Python function that checks for palindromes”, shown in a console and run in the sandbox</span></button>
           </div>
           <p id="can" class="can">Attach a CSV, text or JSON file with “Attach file”; it goes with your next message.</p>
         </section>
@@ -69,6 +70,10 @@
             <button id="send" type="submit" class="btn primary"><span class="send-label">Send</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
           </div>
           <div class="options">
+            <div class="mode" role="radiogroup" aria-label="Kind of answer">
+              <label title="The agent decides: tools and an answer, or code when you ask for code"><input type="radio" name="mode" value="auto" checked> Ask</label>
+              <label title="Always answer with code, shown in a console; Python runs in the sandbox"><input type="radio" name="mode" value="code"> Code</label>
+            </div>
             <label class="option"><input id="partial" type="checkbox" checked> Show partial results if some steps fail</label>
             <span class="hint">Follow-ups can use earlier results in this conversation.</span>
           </div>
