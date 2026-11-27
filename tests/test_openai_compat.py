@@ -197,7 +197,10 @@ def test_clients_and_keys():
 
 def test_default_models_match_provider_profiles():
     for name, profile in PROVIDERS.items():
-        assert DEFAULT_MODELS[name] == profile.default_model
+        if profile.default_model:
+            assert DEFAULT_MODELS[name] == profile.default_model
+        else:  # a generic endpoint has no common model name: ORCH_LLM_MODEL is required
+            assert name not in DEFAULT_MODELS
 
 
 def test_build_planner_for_groq_and_ollama(monkeypatch):
@@ -314,3 +317,107 @@ async def test_other_bad_requests_are_not_retried(registry):
     with pytest.raises(PlanError):
         await OpenAICompatPlanner(GROQ, client).plan(PlanningRequest(text="x"), ToolCatalog.from_registry(registry))
     assert len(calls.calls) == 1
+
+
+
+# --- OpenAI-compatible endpoints ----------------------------------------------------------------
+
+OPENAI = PROVIDERS["openai"]
+
+
+@pytest.mark.parametrize("url,mode,param", [
+    ("https://api.openai.com/v1", "json_schema", "max_completion_tokens"),     # OpenAI itself
+    ("http://localhost:8000/v1", "json_object", "max_tokens"),                 # vLLM / LM Studio
+    ("https://openrouter.ai/api/v1", "json_object", "max_tokens"),             # a hosted gateway
+])
+def test_openai_compatible_modes_follow_the_base_url(url, mode, param):
+    assert OPENAI.json_mode("any-model", url) == mode
+    assert OPENAI.tokens_param(url) == param
+
+
+def test_openai_compatible_base_url_and_key_resolution():
+    env = {"OPENAI_BASE_URL": "http://localhost:1234/v1"}
+    assert OPENAI.resolve_base_url(None, {}) == "https://api.openai.com/v1"
+    assert OPENAI.resolve_base_url(None, env) == "http://localhost:1234/v1"            # SDK convention
+    assert OPENAI.resolve_base_url("https://gw.example/v1", env) == "https://gw.example/v1"  # ORCH_LLM_BASE_URL wins
+    assert OPENAI.key_needed("https://api.openai.com/v1") and OPENAI.key_needed("https://gw.example/v1")
+    for local in ("http://localhost:8000/v1", "http://127.0.0.1:1234/v1", "http://[::1]:8000/v1"):
+        assert not OPENAI.key_needed(local)
+    assert OPENAI.api_key(None, {"OPENAI_API_KEY": "sk-test"}) == "sk-test"
+    assert GROQ.resolve_base_url(None, env) == GROQ.base_url  # other providers ignore OPENAI_BASE_URL
+
+
+def test_build_openai_compatible_planner(monkeypatch):
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    planner = build_planner(Settings(llm_provider="openai", llm_model="gpt-test"))
+    assert isinstance(planner, OpenAICompatPlanner) and planner.name == "openai" and planner.json_mode == "json_schema"
+    with pytest.raises(ConfigurationError, match="ORCH_LLM_MODEL"):
+        build_planner(Settings(llm_provider="openai"))
+    monkeypatch.delenv("OPENAI_API_KEY")
+    with pytest.raises(ConfigurationError, match="OPENAI_API_KEY"):
+        build_planner(Settings(llm_provider="openai", llm_model="gpt-test"))
+    local = build_planner(Settings(llm_provider="openai", llm_model="qwen3", llm_base_url="http://localhost:8000/v1"))
+    assert local.json_mode == "json_object"  # no key needed locally, JSON mode for an unknown server
+
+
+async def test_openai_compatible_request_shape(registry, monkeypatch):
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)  # the machine's own setting must not leak in
+    native, calls = fake_client(completion(json.dumps(PLAN)))
+    await OpenAICompatPlanner(OPENAI, native, model="gpt-test").plan(PlanningRequest(text="x"), ToolCatalog.from_registry(registry))
+    [call] = calls.calls
+    assert call["response_format"]["type"] == "json_schema" and call["response_format"]["json_schema"]["strict"] is True
+    assert call["max_completion_tokens"] == 4096 and "max_tokens" not in call
+
+    local, calls = fake_client(completion(json.dumps(PLAN)))
+    await OpenAICompatPlanner(OPENAI, local, model="qwen3", base_url="http://localhost:8000/v1").plan(
+        PlanningRequest(text="x"), ToolCatalog.from_registry(registry))
+    [call] = calls.calls
+    assert call["response_format"] == {"type": "json_object"} and call["max_tokens"] == 4096
+    assert json.dumps(PLAN_SCHEMA) in call["messages"][0]["content"]  # the schema goes into the instructions
+
+    forced, calls = fake_client(completion(json.dumps(PLAN)))
+    await OpenAICompatPlanner(OPENAI, forced, model="qwen3", base_url="http://localhost:8000/v1",
+                              json_mode="json_schema").plan(PlanningRequest(text="x"), ToolCatalog.from_registry(registry))
+    assert calls.calls[0]["response_format"]["type"] == "json_schema"  # ORCH_LLM_JSON_MODE override
+
+
+def test_openai_compatible_composer_uses_the_endpoint_tokens_param(monkeypatch):
+    from orchestrator.answers import build_composer
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    native = build_composer(Settings(llm_provider="openai", llm_model="gpt-test"))
+    local = build_composer(Settings(llm_provider="openai", llm_model="qwen3", llm_base_url="http://localhost:8000/v1"))
+    assert native._tokens_param == "max_completion_tokens" and local._tokens_param == "max_tokens"
+    assert build_composer(Settings(llm_provider="openai")) is None  # no model, no composer
+
+
+def test_check_config_for_openai_compatible():
+    errors, _ = check_config(Settings(llm_provider="openai"), environ={})
+    assert any("no key is set: set OPENAI_API_KEY" in e for e in errors)
+    assert any("no model is set: set ORCH_LLM_MODEL" in e for e in errors)
+    errors, warnings = check_config(Settings(llm_provider="openai", llm_model="qwen3",
+                                             llm_base_url="http://localhost:8000/v1"), environ={})
+    assert not any("openai" in e for e in errors)
+    assert any("ORCH_LLM_JSON_MODE=json_schema" in w for w in warnings)
+    errors, warnings = check_config(Settings(llm_provider="openai", llm_model="gpt-test"),
+                                    environ={"OPENAI_API_KEY": "sk-test"})
+    assert not any("openai" in e for e in errors) and not any("JSON mode" in w for w in warnings)
+
+
+
+def test_retired_model_is_a_clear_configuration_error():
+    from orchestrator.routing.openai_compat_planner import openai_compat_error
+
+    kind, message = openai_compat_error(_status(openai.APIStatusError, 410))
+    assert kind == "config" and "no longer available" in message and "ORCH_LLM_MODEL" in message
+
+
+def test_check_config_warns_about_a_base_url_without_a_path():
+    _, warnings = check_config(Settings(llm_provider="openai", llm_model="m", llm_base_url="https://gw.example/"),
+                               environ={"OPENAI_API_KEY": "sk-test"})
+    assert any("https://gw.example/v1" in w for w in warnings)
+    _, warnings = check_config(Settings(llm_provider="openai", llm_model="m", llm_base_url="https://gw.example/v1"),
+                               environ={"OPENAI_API_KEY": "sk-test"})
+    assert not any("has no path" in w for w in warnings)

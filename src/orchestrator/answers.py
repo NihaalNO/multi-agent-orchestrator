@@ -208,8 +208,9 @@ class OpenAICompatComposer:
     """Groq / Ollama through their OpenAI-compatible endpoint, with the planner's JSON mode."""
 
     def __init__(self, profile: Any, client: Any, *, model: str, json_mode: str,
-                 max_output_tokens: int = 2048, timeout_s: float = 60.0) -> None:
+                 max_output_tokens: int = 2048, timeout_s: float = 60.0, base_url: str | None = None) -> None:
         self.name = profile.name
+        self._tokens_param = profile.tokens_param(base_url or profile.base_url)
         self.model = model
         self._profile, self._client = profile, client
         self._json_mode, self._max_tokens, self._timeout = json_mode, max_output_tokens, timeout_s
@@ -230,7 +231,7 @@ class OpenAICompatComposer:
                       {"role": "user", "content": user_message(question, evidence)}],
             response_format=response_format,
             timeout=self._timeout,
-            **{self._profile.max_tokens_param: self._max_tokens},
+            **{self._tokens_param: self._max_tokens},
         )
         choice = completion.choices[0] if completion.choices else None
         if choice is None or choice.finish_reason == "length":
@@ -249,11 +250,13 @@ def build_composer(settings: Any) -> AnswerComposer | None:
     if provider not in PROVIDERS:
         return None
     profile = PROVIDERS[provider]
-    client = make_openai_compat_client(profile, api_key=settings.api_key_for(provider), base_url=settings.llm_base_url)
+    base_url = profile.resolve_base_url(settings.llm_base_url)
+    client = make_openai_compat_client(profile, api_key=settings.api_key_for(provider), base_url=base_url)
     model = settings.planner_model or profile.default_model
-    json_mode = settings.llm_json_mode if settings.llm_json_mode != "auto" else profile.json_mode(
-        model, settings.llm_base_url or profile.base_url)
-    return OpenAICompatComposer(profile, client, model=model, json_mode=json_mode)
+    if not model:
+        return None  # the planner reports the missing model; no answer without one
+    json_mode = settings.llm_json_mode if settings.llm_json_mode != "auto" else profile.json_mode(model, base_url)
+    return OpenAICompatComposer(profile, client, model=model, json_mode=json_mode, base_url=base_url)
 
 
 # --------------------------------------------------------------------------------- verification

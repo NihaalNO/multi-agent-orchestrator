@@ -53,11 +53,13 @@ class Settings(BaseModel):
     search_model: str | None = Field(default=None, description="Model for web search; unset → provider default.")
     search_max_uses: int = Field(default=3, ge=1, le=10, description="Web searches Claude may run per call.")
 
-    # Planner: "anthropic" (Claude), "gemini" (Google Gemini), "groq", "ollama" or "rule_based"
-    # (offline, deterministic).
+    # Planner: "anthropic" (Claude), "gemini" (Google Gemini), "groq", "ollama", "openai" (any
+    # OpenAI-compatible endpoint: key OPENAI_API_KEY, base URL OPENAI_BASE_URL or ORCH_LLM_BASE_URL,
+    # model ORCH_LLM_MODEL) or "rule_based" (offline, deterministic).
     llm_provider: str = "anthropic"
     llm_model: str | None = Field(default=None, description="Planner model; unset → provider default.")
-    llm_base_url: str | None = Field(default=None, description="Groq/Ollama endpoint override, e.g. a remote Ollama.")
+    llm_base_url: str | None = Field(default=None, description="Groq/Ollama/OpenAI-compatible endpoint override, "
+                                                               "e.g. a remote Ollama or a vLLM server.")
     max_replans: int = Field(
         default=1, ge=0, le=3,
         description="How often a failed run may be re-planned with the error as feedback (LLM planners only; "

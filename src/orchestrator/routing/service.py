@@ -39,15 +39,16 @@ def build_planner(settings: Settings, audit: AuditLog | None = None) -> Planner:
 
     if provider in PROVIDERS:
         profile = PROVIDERS[provider]
-        client = make_openai_compat_client(profile, api_key=key, base_url=settings.llm_base_url)
+        base_url = profile.resolve_base_url(settings.llm_base_url)
+        client = make_openai_compat_client(profile, api_key=key, base_url=base_url)
         return OpenAICompatPlanner(
-            profile, client, model=settings.planner_model, base_url=settings.llm_base_url,
+            profile, client, model=settings.planner_model, base_url=base_url,
             json_mode=None if settings.llm_json_mode == "auto" else settings.llm_json_mode,
             max_output_tokens=settings.llm_max_output_tokens, audit=audit,
         )
     raise ConfigurationError(
         f"unknown llm_provider {settings.llm_provider!r}; expected one of "
-        "'anthropic', 'gemini', 'groq', 'ollama', 'rule_based'"
+        "'anthropic', 'gemini', 'groq', 'ollama', 'openai', 'rule_based'"
     )
 
 

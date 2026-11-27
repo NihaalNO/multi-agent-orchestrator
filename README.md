@@ -210,10 +210,16 @@ Every provider receives **the same prompt and output schema**, and its output go
 | Google Gemini | `gemini` | `gemini-3.8-flash` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) |
 | Groq | `groq` | `openai/gpt-oss-120b` | `GROQ_API_KEY` |
 | Ollama | `ollama` | `gpt-oss:20b` | none locally; `OLLAMA_API_KEY` for Ollama's cloud |
+| OpenAI-compatible | `openai` | none: set `ORCH_LLM_MODEL` | `OPENAI_API_KEY` (not needed for a local server); endpoint `OPENAI_BASE_URL` or `ORCH_LLM_BASE_URL`, default `https://api.openai.com/v1` |
 | Offline | `rule_based` | — | none (keyword rules; good for tests and demos) |
 
 - **Change the model** with `ORCH_LLM_MODEL`, the key with `ORCH_LLM_API_KEY`, Claude's depth with
-  `ORCH_LLM_EFFORT` (`low` … `max`), and Groq/Ollama's endpoint with `ORCH_LLM_BASE_URL`.
+  `ORCH_LLM_EFFORT` (`low` … `max`), and the Groq/Ollama/OpenAI-compatible endpoint with `ORCH_LLM_BASE_URL`.
+- **Any OpenAI-compatible server** (OpenAI itself, a gateway such as OpenRouter, or a local vLLM or
+  LM Studio): `ORCH_LLM_PROVIDER=openai`, the key in `OPENAI_API_KEY`, the server in `OPENAI_BASE_URL`
+  (or `ORCH_LLM_BASE_URL`, which wins), and the model name it serves in `ORCH_LLM_MODEL`. On
+  `api.openai.com` plans use strict JSON Schemas; other servers get JSON mode with the schema in the
+  instructions (set `ORCH_LLM_JSON_MODE=json_schema` if yours enforces schemas). A local server needs no key.
 - **Llama models:** `ORCH_LLM_MODEL=llama-3.3-70b-versatile` on Groq, or `llama3.3` on Ollama.
   (Meta's own API now serves Meta's Muse models, not Llama, so it is not a provider here.)
 - **Output strictness:** most providers enforce the plan's JSON schema. Llama models on Groq and
