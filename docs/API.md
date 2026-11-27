@@ -250,6 +250,7 @@ Delete a file you may delete. `404` if it does not exist. Deletions are audited 
 |---|---|
 | `GET /health` | `{"status": "ok", "version": "…"}` — public, for load balancers and container health checks |
 | `GET /ui`, `GET /ui/{name}` | the browser chat page and its `chat.css` / `chat.js` — public static files with a strict CSP; the page asks for your API key and calls the endpoints below. `GET /` redirects here |
+| `GET /ui/fonts/{name}` | the chat's self-hosted fonts (Public Sans, Barlow Condensed; SIL OFL, licenses beside them in `static/fonts/`), public, cached for a year |
 | `GET /me` | your user id and roles |
 | `GET /tools` | every registered tool with its spec and runtime state (`enabled`, `health`, `available`) |
 | `GET /tools?capability=web.search` | ranked `(tool, operation)` candidates for a capability |

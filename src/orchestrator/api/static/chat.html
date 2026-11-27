@@ -3,56 +3,78 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orchestrator Chat</title>
+  <title>Orchestrator</title>
+  <meta name="description" content="Ask about your files and the web; every answer shows its steps, its sources and a signed receipt.">
+  <link rel="preload" href="/ui/fonts/public-sans-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/ui/fonts/barlow-condensed-600.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/ui/chat.css">
   <script src="/ui/chat.js" defer></script>
 </head>
 <body>
   <header class="bar">
-    <span class="brand">Orchestrator</span>
+    <span class="brand"><span class="brand-mark" aria-hidden="true"></span>Orchestrator</span>
+    <button id="new-conversation-top" class="btn quiet small only-narrow" type="button" hidden>New<span class="long">&nbsp;conversation</span></button>
     <span id="who" class="who" hidden></span>
-    <button id="signout" class="link" type="button" hidden>Sign out</button>
+    <button id="signout" class="btn small" type="button" hidden>Sign out</button>
   </header>
 
   <section id="signin" class="signin" hidden>
     <form id="signin-form" class="card">
       <h1>Sign in</h1>
-      <p class="muted">Paste your <strong>orchestrator</strong> API key: the key your administrator issued for your user
+      <p>Paste your <strong>orchestrator</strong> API key: the key your administrator issued for your user
         (on the dev server it is in <code>config/dev/api-key.txt</code>). Not a Groq, Anthropic, Gemini or Tavily key; those stay on the server.</p>
-      <p class="muted">The key stays in this browser tab only and is cleared when the tab closes.</p>
+      <p>The key stays in this browser tab only and is cleared when the tab closes.</p>
       <label for="key">Orchestrator API key</label>
       <input id="key" type="password" autocomplete="off" spellcheck="false" required>
       <p id="signin-error" class="error" role="alert" hidden></p>
-      <button type="submit" class="primary">Sign in</button>
+      <button id="signin-button" type="submit" class="btn primary">Sign in</button>
     </form>
   </section>
 
-  <main id="chat" class="chat" hidden>
-    <div id="log" class="log" aria-live="polite"></div>
-    <template id="empty-template">
-      <div class="empty" id="empty">
-        <p>Ask for something in plain English, for example:</p>
-        <p class="example">Read users/<span data-user>you</span>/sales.csv and calculate its average revenue using Python</p>
-        <p class="muted">Attach a CSV or text file with the paperclip; it is uploaded to your own folder and sent with your next message.</p>
-        <p class="muted">Each message is handled on its own; mention the file or value again in follow-ups.</p>
-      </div>
-    </template>
+  <div id="workspace" class="workspace" hidden>
+    <nav class="rail" aria-label="This conversation">
+      <button id="new-conversation" class="btn" type="button" title="Forget earlier messages; follow-ups start fresh">New conversation</button>
+      <h2>Questions</h2>
+      <ol id="turns" class="turns"></ol>
+      <p id="rail-empty" class="rail-empty">Your questions appear here.</p>
+    </nav>
 
-    <form id="composer" class="composer">
-      <div id="chips" class="chips"></div>
-      <div class="row">
-        <label class="attach" title="Attach a file">
-          <input id="file" type="file" hidden>
-          <span aria-hidden="true">&#128206;</span><span class="sr">Attach a file</span>
-        </label>
-        <textarea id="text" rows="1" placeholder="Message the agent" title="Enter to send, Shift+Enter for a new line" aria-label="Message the agent" required></textarea>
-        <button id="send" type="submit" class="primary">Send</button>
-      </div>
-      <div class="options">
-        <label class="option"><input id="partial" type="checkbox" checked> Return partial results if some steps fail</label>
-        <button id="new-conversation" class="link small-link" type="button" title="Forget earlier messages; follow-ups start fresh">New conversation</button>
-      </div>
-    </form>
-  </main>
+    <main id="chat" class="chat">
+      <div id="log" class="log"></div>
+      <p id="status" class="sr" role="status" aria-live="polite"></p>
+      <template id="empty-template">
+        <section class="empty" id="empty" aria-labelledby="empty-title">
+          <h1 id="empty-title">Ask about your files or the web. Every answer shows its working.</h1>
+          <p>Each reply lists the steps that ran, cites its evidence, checks every number against it, and comes with a signed receipt.</p>
+          <div class="examples">
+            <button type="button" class="example" data-prompt="Read users/{user}/sales.csv and calculate its average revenue using Python."><span class="k">1</span><span>Read <span data-user>you</span>’s sales.csv and calculate its average revenue using Python</span></button>
+            <button type="button" class="example" data-prompt="Search the web for the latest SaaS revenue growth benchmarks."><span class="k">2</span><span>Search the web for the latest SaaS revenue growth benchmarks</span></button>
+            <button type="button" class="example" data-prompt="Now double it using Python."><span class="k">3</span><span>Then a follow-up that builds on the last answer: “Now double it using Python”</span></button>
+          </div>
+          <p id="can" class="can">Attach a CSV, text or JSON file with “Attach file”; it goes with your next message.</p>
+        </section>
+      </template>
+
+      <form id="composer" class="composer">
+        <div class="composer-inner">
+          <div id="chips" class="chips"></div>
+          <div class="row">
+            <input id="file" type="file" hidden>
+            <button id="attach" class="btn" type="button" title="Attach a CSV, text or JSON file">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4L15.5 7.6"/></svg>
+              <span class="sr">Attach file</span>
+            </button>
+            <label class="sr" for="text">Message</label>
+            <textarea id="text" rows="1" placeholder="Ask about your files or the web" title="Enter to send, Shift+Enter for a new line" required></textarea>
+            <button id="send" type="submit" class="btn primary"><span class="send-label">Send</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+          </div>
+          <div class="options">
+            <label class="option"><input id="partial" type="checkbox" checked> Show partial results if some steps fail</label>
+            <span class="hint">Follow-ups can use earlier results in this conversation.</span>
+          </div>
+        </div>
+      </form>
+    </main>
+  </div>
 </body>
 </html>

@@ -140,7 +140,7 @@ def test_chat_ui_is_packaged():
     from pathlib import Path
 
     data = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
-    assert data["tool"]["setuptools"]["package-data"]["orchestrator.api"] == ["static/*"]
+    assert data["tool"]["setuptools"]["package-data"]["orchestrator.api"] == ["static/*", "static/fonts/*"]
 
 
 def test_chat_ui_explains_which_key_and_never_sends_provider_keys():
@@ -180,3 +180,37 @@ def test_chat_ui_links_only_web_addresses():
     safe = js[js.index("function safeUrl"):js.index("function sources")]
     assert '"https:"' in safe and '"http:"' in safe
     assert 'rel: "noopener noreferrer"' in js and "const href = safeUrl(s.url)" in js
+
+
+
+@pytest.mark.parametrize("name", ["public-sans-400.woff2", "public-sans-600.woff2", "public-sans-700.woff2",
+                                  "barlow-condensed-600.woff2"])
+def test_chat_fonts_are_self_hosted(client, name):
+    r = client.get(f"/ui/fonts/{name}")
+    assert r.status_code == 200 and r.headers["content-type"] == "font/woff2" and r.content[:4] == b"wOF2"
+    assert "font-src 'self'" in client.get("/ui").headers["content-security-policy"]
+
+
+@pytest.mark.parametrize("name", ["LICENSE-PublicSans.txt", "chat.js", "other.woff2"])
+def test_only_the_chat_fonts_are_served(client, name):
+    assert client.get(f"/ui/fonts/{name}").status_code == 404
+
+
+def test_font_licenses_ship_with_the_fonts():
+    from pathlib import Path
+
+    import orchestrator.api.app as app_module
+
+    fonts = Path(app_module.__file__).parent / "static" / "fonts"
+    for lic in ("LICENSE-PublicSans.txt", "LICENSE-BarlowCondensed.txt"):
+        assert "SIL Open Font License" in (fonts / lic).read_text(encoding="utf-8")
+
+
+def test_receipts_are_copied_not_downloaded():
+    from pathlib import Path
+
+    import orchestrator.api.app as app_module
+
+    js = (Path(app_module.__file__).parent / "static" / "chat.js").read_text(encoding="utf-8")
+    assert "Copy receipt" in js and "navigator.clipboard.writeText" in js and 'execCommand("copy")' in js
+    assert "Download receipt" not in js and "createObjectURL" not in js

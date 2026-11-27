@@ -7,7 +7,7 @@ const $ = (id) => document.getElementById(id);
 // history: ids of this conversation's completed requests, oldest first. Follow-ups send the last
 // MAX_CONTEXT of them so the agent can use their results ("now double it").
 const MAX_CONTEXT = 5;
-const state = { key: null, me: null, attached: [], history: [] };
+const state = { key: null, me: null, attached: [], history: [], turns: 0, can: [] };
 
 // ------------------------------------------------------------------ helpers
 
@@ -36,8 +36,12 @@ function short(value, limit = 4000) {
   return text.length > limit ? text.slice(0, limit) + "\n... (truncated)" : text;
 }
 
+function formatNumber(v) {
+  return Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
 function formatValue(v) {
-  if (typeof v === "number") return Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  if (typeof v === "number") return formatNumber(v);
   if (typeof v === "string") return v;
   if (v && typeof v === "object" && !Array.isArray(v)) {
     const entries = Object.entries(v);
@@ -47,6 +51,10 @@ function formatValue(v) {
   }
   return short(v, 600);
 }
+
+function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
+function seconds(ms) { return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`; }
+function humanize(id) { return (id || "").replace(/[_-]+/g, " ").replace(/^\w/, (c) => c.toUpperCase()); }
 
 async function api(method, path, { body, raw, headers = {} } = {}) {
   const init = { method, headers: { Authorization: `Bearer ${state.key}`, ...headers } };
@@ -64,6 +72,28 @@ function errorText(data, status) {
   if (data && data.detail) return typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
   return `Request failed (HTTP ${status}).`;
 }
+
+// Plain-language reasons, so a dead end always says what happened and what to do instead.
+const PLAIN_ERRORS = {
+  no_matching_tool: "None of the tools you can use can do this.",
+  permission_denied: "You don't have permission for part of this request.",
+  plan_error: "The planner couldn't produce a usable plan. Try rephrasing the request.",
+  planner_unavailable: "The planning service is unavailable right now. Try again in a minute.",
+  configuration_error: "The server isn't set up for this yet. Ask your administrator.",
+  request_not_found: "An earlier message this builds on is no longer available.",
+};
+
+function plainError(error) {
+  if (!error) return "Something went wrong.";
+  return PLAIN_ERRORS[error.code] || error.message || error.code;
+}
+
+function plainAnswerNote(note) {
+  if (/RateLimit/i.test(note)) return "the writing model is busy right now (rate limit). Your results are below.";
+  return note;
+}
+
+function announce(text) { $("status").textContent = text; }
 
 // ------------------------------------------------------------------ sign in
 
@@ -87,17 +117,39 @@ function providerOf(key) {
   return null;
 }
 
+// What this user's tools can do, in plain words (from GET /capabilities).
+const CAN = [
+  [/^(file\.|data\.tabular)/, "read your uploaded files"],
+  [/^code\.python/, "run Python on your data"],
+  [/^web\.search/, "search the web"],
+];
+
+async function loadCapabilities() {
+  try {
+    const { ok, data } = await api("GET", "/capabilities");
+    const names = ok && data ? Object.keys(data) : [];
+    state.can = CAN.filter(([re]) => names.some((n) => re.test(n))).map(([, words]) => words);
+  } catch { state.can = []; }
+}
+
+function canSentence() {
+  if (!state.can.length) return "";
+  const list = state.can.length > 1 ? `${state.can.slice(0, -1).join(", ")} and ${state.can.at(-1)}` : state.can[0];
+  return `Here I can ${list}.`;
+}
+
 async function signIn(key) {
   state.key = key;
   const res = await fetch("/me", { headers: { Authorization: `Bearer ${key}` } });
   if (!res.ok) { state.key = null; return false; }
   state.me = await res.json();
   storeSet(key);
-  $("who").textContent = `${state.me.user_id} · ${state.me.roles.join(", ") || "no roles"}`;
-  $("who").hidden = $("signout").hidden = false;
+  $("who").replaceChildren(el("strong", { text: state.me.user_id }), state.me.roles.map(humanize).join(" · ") || "No roles");
+  $("who").hidden = $("signout").hidden = $("new-conversation-top").hidden = false;
   $("signin").hidden = true;
+  await loadCapabilities();
   resetConversation();
-  $("chat").hidden = false;
+  $("workspace").hidden = false;
   autosize();
   $("text").focus();
   return true;
@@ -108,10 +160,22 @@ async function signIn(key) {
 function resetConversation() {
   state.attached = [];
   state.history = [];
+  state.turns = 0;
   $("chips").replaceChildren();
   $("text").value = "";
+  $("turns").replaceChildren();
+  $("rail-empty").hidden = false;
   const empty = $("empty-template").content.cloneNode(true);
-  for (const node of empty.querySelectorAll("[data-user]")) node.textContent = state.me ? state.me.user_id : "you";
+  for (const node of empty.querySelectorAll("[data-user]")) node.textContent = state.me ? state.me.user_id : "your";
+  for (const button of empty.querySelectorAll("[data-prompt]")) {
+    button.addEventListener("click", () => {
+      $("text").value = button.dataset.prompt.replace("{user}", state.me ? state.me.user_id : "you");
+      autosize();
+      $("text").focus();
+    });
+  }
+  const can = canSentence();
+  if (can) empty.querySelector("#can").textContent = `${can} Attach a CSV, text or JSON file with “Attach file”; it goes with your next message.`;
   $("log").replaceChildren(empty);
 }
 
@@ -119,8 +183,8 @@ function signOut(message) {
   state.key = state.me = null;
   storeSet(null);
   resetConversation();
-  $("who").hidden = $("signout").hidden = true;
-  $("chat").hidden = true;
+  $("who").hidden = $("signout").hidden = $("new-conversation-top").hidden = true;
+  $("workspace").hidden = true;
   $("signin").hidden = false;
   $("key").value = "";
   $("signin-error").hidden = !message;
@@ -132,7 +196,7 @@ function signOut(message) {
 
 async function attach(file) {
   const path = `users/${state.me.user_id}/${file.name}`;
-  const chip = el("span", { class: "chip", text: `Uploading ${file.name}...` });
+  const chip = el("span", { class: "chip", text: `Uploading ${file.name}…` });
   $("chips").append(chip);
   try {
     const { ok, status, data } = await api("PUT", `/files/${encodeURI(path)}?overwrite=true`, { raw: file });
@@ -144,74 +208,102 @@ async function attach(file) {
   } catch (e) { chip.remove(); }
 }
 
-// ------------------------------------------------------------------ messages
+// ------------------------------------------------------------------ turns and the rail
 
-// "Planning and running (12s)": LLM planning can take a while (provider rate limits, retries),
-// so show that the request is still alive. The timer stops when the bubble is replaced.
-function working(label) {
-  const node = el("span", { class: "thinking", text: label });
-  const started = Date.now();
-  const timer = setInterval(() => {
-    if (!node.isConnected) return clearInterval(timer);
-    const s = Math.round((Date.now() - started) / 1000);
-    if (s >= 3) node.textContent = `${label} (${s}s)`;
-  }, 1000);
-  return node;
-}
-
-function addMessage(kind, ...children) {
+function addTurn(text, files) {
   $("empty")?.remove();
-  const node = el("div", { class: `msg ${kind}` }, ...children);
-  $("log").append(node);
-  node.scrollIntoView({ block: "end", behavior: "smooth" });
-  return node;
+  $("rail-empty").hidden = true;
+  const n = ++state.turns;
+  const id = `turn-${n}`;
+  const question = el("header", { class: "question" },
+    el("span", { class: "n", text: String(n).padStart(2, "0") }),
+    el("p", { text }),
+    files.length ? el("span", { class: "files", text: `With ${files.join(", ")}` }) : null);
+  const reply = el("div", { class: "reply" });
+  const article = el("article", { class: "turn", id, "aria-label": `Question ${n}` }, question, reply);
+  $("log").append(article);
+
+  const mark = el("span", { class: "mark run", text: "◌", "aria-label": "running" });
+  const link = el("a", { href: `#${id}`, onclick: (ev) => { ev.preventDefault(); article.scrollIntoView({ behavior: "smooth", block: "start" }); } },
+    el("span", { class: "n", text: String(n).padStart(2, "0") }), el("span", { text: text.length > 70 ? `${text.slice(0, 68)}…` : text }), mark);
+  $("turns").append(el("li", {}, link));
+  article.scrollIntoView({ block: "start", behavior: "smooth" });
+  return { article, reply, mark };
 }
 
-function statusBadge(record) {
-  const s = record.state;
+const RAIL = { ok: ["✓", "answered"], warn: ["!", "needs attention"], bad: ["✗", "did not run"], run: ["◌", "running"] };
+function setRail(turn, tone) {
+  const [glyph, label] = RAIL[tone] || RAIL.run;
+  turn.mark.className = `mark ${tone}`;
+  turn.mark.textContent = glyph;
+  turn.mark.setAttribute("aria-label", label);
+}
+
+// ------------------------------------------------------------------ the reply
+
+// One honest status: never green when what the user asked for did not arrive.
+function outcome(record) {
   const partial = record.report && record.report.status === "partial";
-  const label = s === "completed" ? (partial ? "partly completed" : "completed") : s.replace("_", " ");
-  const tone = s === "completed" && !partial ? "ok" : s === "awaiting_approval" || partial ? "warn" : "bad";
-  return el("span", { class: `status ${tone}`, text: label });
-}
-
-function highlights(record) {
-  const box = el("div", { class: "answer" });
-  for (const r of (record.report && record.report.task_results) || []) {
-    if (r.status !== "succeeded" || !r.output) continue;
-    const o = r.output;
-    let value = null;
-    if ("result" in o) value = formatValue(o.result);
-    else if (typeof o.answer === "string") value = o.answer;
-    else if (Array.isArray(o.rows)) value = `${o.rows.length} rows from ${o.path || "file"}`;
-    else if (Array.isArray(o.results)) {
-      box.append(el("div", { class: "item" }, el("span", { class: "label", text: r.task_id }),
-        el("span", { class: "muted", text: `${o.results.length} web results${o.backend ? " via " + o.backend : ""}` })));
-      if (o.results.length) box.append(sources(o.results));
-      continue;
-    }
-    if (value == null) continue;
-    box.append(el("div", { class: "item" }, el("span", { class: "label", text: r.task_id }), el("span", { class: "value", text: value })));
+  switch (record.state) {
+    case "completed":
+      if (record.answer_note) return ["warn", "Results ready", "no written answer"];
+      if (partial) return ["warn", "Partly completed", "some steps did not finish"];
+      return ["ok", record.answer ? "Answered" : "Completed", ""];
+    case "awaiting_approval": return ["warn", "Waiting for approval", ""];
+    case "failed": return ["bad", "Failed", "no step succeeded"];
+    case "rejected": return ["bad", "Couldn't run this", ""];
+    default: return ["run", humanize(record.state), ""];
   }
-  return box.childElementCount ? box : null;
 }
 
-// ------------------------------------------------------------------ grounded answer
+function stateLine(record) {
+  const [tone, label, sub] = outcome(record);
+  const used = (record.context || []).length;
+  const bits = [sub, used ? `builds on ${plural(used, "earlier message")}` : ""].filter(Boolean).join(" · ");
+  return el("span", { class: `state ${tone}` }, label, bits ? el("span", { class: "sub", text: ` · ${bits}` }) : null);
+}
+
+// The signature: the headline figure with its Source line, like a business-paper chart.
+function headlineFigure(record, anchor) {
+  const results = (record.report && record.report.task_results) || [];
+  // A computed number: a bare result, or an object holding exactly one number ({"average": 129325}).
+  const numberIn = (v) => {
+    if (typeof v === "number") return v;
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const nums = Object.values(v).filter((x) => typeof x === "number");
+      return nums.length === 1 ? nums[0] : null;
+    }
+    return null;
+  };
+  const hit = results.find((r) => r.status === "succeeded" && r.output && numberIn(r.output.result) != null);
+  if (!hit) return null;
+  const value = numberIn(hit.output.result);
+  const task = record.plan && record.plan.tasks.find((t) => t.task_id === hit.task_id);
+  const label = (task && task.description) || humanize(hit.task_id);
+  const ev = record.answer && (record.answer.evidence || []).find((e) => e.task_id === hit.task_id && e.kind === "computed");
+  const checked = ev && (record.answer.claims || []).some((c) => c.status === "supported" && (c.evidence || []).includes(ev.id));
+  const source = el("div", { class: "source" }, el("b", { text: "Source" }),
+    ev ? el("a", { class: "cite", href: `#${anchor}-${ev.id}`, text: ev.id, onclick: (e) => { e.preventDefault(); showEvidence(anchor, ev.id); } }) : null,
+    el("span", { text: `Python · step ${hit.task_id}` }),
+    checked ? el("span", { class: "checked", text: "✓ checked by code" }) : null);
+  return el("div", { class: "figure" }, el("div", { class: "label", text: label }),
+    el("div", { class: "value", text: formatNumber(value) }), source);
+}
 
 const CLAIM_STATUS = {
   supported: ["ok", "✓ checked", "Every number matches the evidence it cites."],
-  unverified: ["warn", "⚠ unverified", "Code could not confirm this against the cited evidence."],
+  unverified: ["warn", "! unverified", "Code could not confirm this against the cited evidence."],
   uncited: ["bad", "✗ no evidence", "This statement cites no existing evidence."],
 };
 
 // Answer text with [E1] citations turned into chips that jump to the evidence item.
 function citedText(text, anchor) {
-  const p = el("p", { class: "grounded" });
+  const p = el("p", { class: "answer-text" });
   let last = 0;
   for (const m of text.matchAll(/\[(E\d+)(\?)?\]/g)) {
     p.append(text.slice(last, m.index));
     if (m[2]) p.append(el("span", { class: "cite bad", title: "This citation points to no evidence", text: `${m[1]}?` }));
-    else p.append(el("a", { class: "cite", href: `#${anchor}-${m[1]}`, text: m[1],
+    else p.append(el("a", { class: "cite", href: `#${anchor}-${m[1]}`, text: m[1], "aria-label": `Evidence ${m[1]}`,
       onclick: (ev) => { ev.preventDefault(); showEvidence(anchor, m[1]); } }));
     last = m.index + m[0].length;
   }
@@ -230,51 +322,55 @@ function showEvidence(anchor, id) {
 
 function groundedAnswer(answer, requestId) {
   const anchor = `ev-${requestId}`;
-  const box = el("div", { class: "answer-block" }, citedText(answer.text, anchor));
+  const parts = [citedText(answer.text, anchor)];
 
   const claims = answer.claims || [];
   const ok = claims.filter((c) => c.status === "supported").length;
-  const why = el("details", { class: "why" }, el("summary", {
-    text: `How this answer is supported: ${ok} of ${claims.length} claim${claims.length === 1 ? "" : "s"} checked` }));
+  const allOk = ok === claims.length && answer.cites_inline !== false;
+  const why = el("details", { class: "block" }, el("summary", {},
+    "How this answer is supported", el("span", { class: "count", text: ` · ${plural(claims.length, "claim")}` })));
   const list = el("ul", { class: "claims" });
   for (const c of claims) {
     const [tone, label, help] = CLAIM_STATUS[c.status] || CLAIM_STATUS.uncited;
-    const refs = el("span", { class: "refs" });
-    for (const id of c.evidence || []) refs.append(el("a", { class: "cite", href: `#${anchor}-${id}`, text: id,
+    const refs = (c.evidence || []).map((id) => el("a", { class: "cite", href: `#${anchor}-${id}`, text: id,
       onclick: (ev) => { ev.preventDefault(); showEvidence(anchor, id); } }));
-    list.append(el("li", {}, el("span", { class: `status ${tone}`, title: help, text: label }), " ",
-      el("span", { text: c.statement }), " ", refs, c.note ? el("span", { class: "note", text: c.note }) : null));
+    list.append(el("li", {}, el("span", { class: `tag ${tone}`, title: help, text: label }),
+      el("span", {}, c.statement, " ", ...refs, c.note ? el("span", { class: "note", text: c.note }) : null)));
   }
   why.append(list);
-  if (answer.cites_inline === false) {
-    box.append(el("p", { class: "muted small", text: "The answer text cites no evidence inline; each claim's sources are listed below." }));
-  }
   // Anything unconfirmed, or an answer whose text links no sources, is shown, not tucked away.
-  if (ok < claims.length || answer.cites_inline === false) why.open = true;
-  box.append(why);
+  if (!allOk) why.open = true;
 
+  const verify = el("div", { class: `verify ${allOk ? "" : "warn"}` },
+    allOk ? `✓ ${ok} of ${plural(claims.length, "claim")} checked against the evidence`
+          : `${ok} of ${plural(claims.length, "claim")} confirmed; the rest are marked below`,
+    answer.model ? el("span", { class: "by", text: `Written by ${answer.model}, checked by code` }) : null);
+  parts.push(verify);
+  if (answer.cites_inline === false) {
+    parts.push(el("p", { class: "note-line", text: "The answer text cites no evidence inline; each claim's sources are listed below." }));
+  }
   if ((answer.gaps || []).length) {
-    box.append(el("div", { class: "gaps" }, el("strong", { text: "Not answered by the evidence:" }),
+    parts.push(el("div", { class: "callout" }, el("strong", { text: "Not answered by the evidence" }),
       el("ul", {}, ...answer.gaps.map((g) => el("li", { text: g })))));
   }
+  parts.push(why);
 
-  const evidence = el("details", { class: "evidence" },
-    el("summary", { text: `Evidence (${(answer.evidence || []).length}) from the tools that ran` }));
-  const ol = el("ol", { class: "sources" });
+  const evidence = el("details", { class: "block" }, el("summary", {},
+    "Evidence", el("span", { class: "count", text: ` · ${(answer.evidence || []).length} items from the steps that ran` })));
+  const ol = el("ol", { class: "evidence" });
   for (const e of answer.evidence || []) {
     const href = safeUrl(e.url || "");
-    const head = href ? el("a", { href, target: "_blank", rel: "noopener noreferrer", text: e.label })
-                      : el("span", { class: "label-strong", text: e.label });
+    const head = href ? el("a", { class: "title", href, target: "_blank", rel: "noopener noreferrer", text: e.label })
+                      : el("span", { class: "title", text: e.label });
     const date = e.published_at ? new Date(e.published_at).toLocaleDateString() : null;
-    const meta = [e.id, e.kind === "web" ? "web" : e.kind === "computed" ? "computed with Python" : e.kind,
-                  `step ${e.task_id}`, date].filter(Boolean).join(" · ");
-    ol.append(el("li", { id: `${anchor}-${e.id}` }, head, el("span", { class: "meta", text: meta }),
-      el("q", { text: e.text })));
+    const kind = e.kind === "web" ? "Web" : e.kind === "computed" ? "Computed with Python" : e.kind === "earlier" ? "Earlier result" : humanize(e.kind);
+    const meta = [kind, `step ${e.task_id}`, date].filter(Boolean).join(" · ");
+    ol.append(el("li", { id: `${anchor}-${e.id}` }, el("span", { class: "key", text: e.id }),
+      el("div", {}, head, el("span", { class: "meta", text: meta }), el("q", { text: e.text }))));
   }
   evidence.append(ol);
-  box.append(evidence);
-  if (answer.model) box.append(el("p", { class: "muted small", text: `Written by ${answer.model}; checked by code.` }));
-  return box;
+  parts.push(evidence);
+  return parts;
 }
 
 // Only web addresses become links; anything else (javascript:, data:, ...) stays plain text.
@@ -283,48 +379,113 @@ function safeUrl(url) {
 }
 
 function sources(results) {
-  const list = el("ol", { class: "sources" });
-  for (const s of results.slice(0, 10)) {
+  const list = el("ol", { class: "evidence" });
+  results.slice(0, 10).forEach((s, i) => {
     const href = safeUrl(s.url);
     const title = href
-      ? el("a", { href, target: "_blank", rel: "noopener noreferrer", text: s.title || s.url })
-      : el("span", { text: s.title || s.url || "" });
+      ? el("a", { class: "title", href, target: "_blank", rel: "noopener noreferrer", text: s.title || s.url })
+      : el("span", { class: "title", text: s.title || s.url || "" });
     const meta = [s.source, s.published_at ? new Date(s.published_at).toLocaleDateString() : null].filter(Boolean).join(" · ");
-    list.append(el("li", {}, title, meta ? el("span", { class: "meta", text: meta }) : null,
-      s.snippet ? el("q", { text: s.snippet }) : null));
-  }
+    list.append(el("li", {}, el("span", { class: "key", text: String(i + 1) }),
+      el("div", {}, title, meta ? el("span", { class: "meta", text: meta }) : null, s.snippet ? el("q", { text: s.snippet }) : null)));
+  });
   return list;
 }
 
-function steps(record) {
-  const results = (record.report && record.report.task_results) || [];
-  if (!results.length) return null;
-  const box = el("details", {}, el("summary", { text: `Steps (${results.length})` }));
-  for (const r of results) {
-    const step = el("div", { class: "step" },
-      el("div", { class: "head" },
-        el("strong", { text: r.task_id }),
-        el("code", { text: r.tool_id ? `${r.tool_id}.${r.operation}` : "" }),
-        el("span", { class: "muted", text: r.status })));
-    if (r.output) step.append(el("pre", { text: short(r.output) }));
-    if (r.error) step.append(el("pre", { class: "error", text: short({ code: r.error.code, message: r.error.message, details: r.error.details }) }));
-    box.append(step);
+// The headline figure shows a bare number or an object holding exactly one number; anything else
+// is listed with the results below.
+function shownAsFigure(v) {
+  if (typeof v === "number") return true;
+  return !!v && typeof v === "object" && !Array.isArray(v) && Object.values(v).filter((x) => typeof x === "number").length === 1;
+}
+
+// Results without a written answer: the computed values and the sources, structured.
+function highlights(record) {
+  const box = el("div", { class: "highlights" });
+  for (const r of (record.report && record.report.task_results) || []) {
+    if (r.status !== "succeeded" || !r.output) continue;
+    const o = r.output;
+    if (Array.isArray(o.results) && o.results.length) {
+      const d = el("details", { class: "block" }, el("summary", {}, "Web results",
+        el("span", { class: "count", text: ` · ${o.results.length} from step ${r.task_id}` })));
+      d.append(sources(o.results));
+      box.append(d);
+    } else if ("result" in o && !shownAsFigure(o.result)) {
+      box.append(el("p", { class: "answer-text" }, el("b", { text: `${humanize(r.task_id)}: ` }), formatValue(o.result)));
+    }
   }
-  const plan = record.plan && record.plan.tasks;
-  if (plan) box.append(el("div", { class: "step" }, el("strong", { text: "Plan" }), el("pre", { text: short(plan) })));
-  return box;
+  return box.childElementCount ? box : null;
+}
+
+// ------------------------------------------------------------------ the trace (kept after the run)
+
+const TOOL_WORDS = {
+  "file_processing.read_csv": "Read CSV", "file_processing.read_text": "Read text file",
+  "file_processing.list_files": "List files", "python_exec.run": "Run Python", "web_search.search": "Web search",
+};
+const STEP_MARK = { succeeded: "✓", failed: "✗", timed_out: "⏱", denied: "⛔", skipped: "–", cancelled: "–",
+                    awaiting_approval: "⏸", running: "◌", pending: "○" };
+
+function toolWords(toolId, op) { return TOOL_WORDS[`${toolId}.${op}`] || (toolId ? `${toolId}.${op}` : ""); }
+
+// A step's time comes from its start and finish (the record has no duration field).
+function stepMs(result) {
+  if (result.duration_ms != null) return result.duration_ms;
+  const a = Date.parse(result.started_at), b = Date.parse(result.finished_at);
+  return Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a : null;
+}
+
+function traceRow(result, task, maxMs) {
+  const ms = stepMs(result);
+  const what = el("span", { class: "what" }, el("b", { text: (task && task.description) || humanize(result.task_id) }),
+    el("span", { text: [toolWords(result.tool_id, result.operation), result.deduplicated ? "reused" : "", result.task_id].filter(Boolean).join(" · ") }));
+  const head = [el("span", { class: "mark", text: STEP_MARK[result.status] || "•", "aria-label": result.status }), what,
+    el("span", { class: "ms", text: ms != null ? seconds(ms) : "" })];
+  let bar = null;
+  if (ms != null && maxMs) {
+    // Width set through the CSSOM: the page's CSP forbids inline style attributes.
+    const fill = el("span", { class: "bar-fill" });
+    fill.style.width = `${Math.max(0.5, (ms / maxMs) * 100).toFixed(1)}%`;
+    bar = el("span", { class: "bar-track", "aria-hidden": "true" }, fill);
+  }
+
+  const io = el("div", { class: "io" });
+  const inputs = task && task.inputs ? { ...task.inputs } : null;
+  if (inputs && typeof inputs.code === "string") { io.append(el("h4", { text: "Code" }), el("pre", { text: inputs.code })); delete inputs.code; }
+  if (inputs && Object.keys(inputs).length) io.append(el("h4", { text: "Inputs" }), el("pre", { text: short(inputs, 1500) }));
+  if (result.output) io.append(el("h4", { text: "Output" }), el("pre", { text: short(result.output, 2500) }));
+  if (result.error) io.append(el("h4", { text: "What went wrong" }), el("pre", { text: result.error.message || result.error.code }));
+  const details = el("details", {}, el("summary", { "aria-label": `Show inputs and output of ${result.task_id}` }, ...head, bar), io);
+  return el("li", { class: result.status }, details);
+}
+
+function tracePanel(record) {
+  const results = (record.report && record.report.task_results) || [];
+  const tasks = new Map(((record.plan && record.plan.tasks) || []).map((t) => [t.task_id, t]));
+  const maxMs = Math.max(0, ...results.map((r) => stepMs(r) || 0));
+  const total = (record.stages || []).find((s) => s.stage === "total");
+  const panel = el("section", { class: "panel", "aria-label": "Steps that ran" },
+    el("h3", {}, "Steps", el("span", { class: "count", text: plural(results.length, "step") })));
+  const list = el("ol", { class: "trace" }, ...results.map((r) => traceRow(r, tasks.get(r.task_id), maxMs)));
+  panel.append(list);
+  if (total) panel.append(el("div", { class: "total" }, el("span", { text: "Total, planning and answer included" }), el("span", { text: seconds(total.duration_ms) })));
+  if (record.receipt) panel.append(receiptBlock(record.receipt));
+  if (record.plan && record.report && (record.state === "completed" || record.state === "failed")) {
+    panel.append(replayControl(record.request_id));
+  }
+  return panel;
 }
 
 async function approvalCard(record, taskId, approvalId, onDecided) {
-  const card = el("div", { class: "approval" }, el("strong", { text: `Approval needed: ${taskId}` }));
+  const card = el("div", { class: "approval" }, el("strong", { text: `Approval needed: ${humanize(taskId)}` }));
   const { ok, data } = await api("GET", `/approvals/${encodeURIComponent(approvalId)}`);
   if (ok) {
-    card.append(el("code", { text: `${data.tool_id}.${data.operation}${data.resource ? " on " + data.resource : ""}` }));
+    card.append(el("span", { text: `${toolWords(data.tool_id, data.operation)}${data.resource ? " on " + data.resource : ""}` }));
     card.append(el("pre", { text: data.args_preview }));
   }
   const canApprove = state.me.roles.includes("approver");
   if (!canApprove) {
-    card.append(el("span", { class: "muted", text: "Waiting for someone with the approver role. Ask them to approve it, then press Continue." }));
+    card.append(el("span", { class: "note-line", text: "Waiting for someone with the approver role. Ask them to approve it, then press Continue." }));
     return card;
   }
   const actions = el("div", { class: "actions" });
@@ -332,53 +493,73 @@ async function approvalCard(record, taskId, approvalId, onDecided) {
     for (const b of actions.querySelectorAll("button")) b.disabled = true;
     const res = await api("POST", `/approvals/${encodeURIComponent(approvalId)}/${approve ? "approve" : "deny"}`, { body: {} });
     if (!res.ok) { actions.append(el("span", { class: "error", text: errorText(res.data, res.status) })); return; }
-    actions.replaceChildren(el("span", { class: approve ? "status ok" : "status bad", text: approve ? "approved" : "denied" }));
+    actions.replaceChildren(el("span", { class: `tag ${approve ? "ok" : "bad"}`, text: approve ? "Approved" : "Denied" }));
     onDecided();
   };
   actions.append(
-    el("button", { type: "button", class: "primary", text: "Approve", onclick: () => decide(true) }),
-    el("button", { type: "button", class: "secondary", text: "Deny", onclick: () => decide(false) }));
+    el("button", { type: "button", class: "btn primary", text: "Approve", onclick: () => decide(true) }),
+    el("button", { type: "button", class: "btn", text: "Deny", onclick: () => decide(false) }));
   card.append(actions);
   return card;
 }
 
-async function renderRecord(bubble, record, status) {
-  bubble.replaceChildren();
+async function renderRecord(turn, record, status) {
+  const reply = turn.reply;
+  reply.replaceChildren();
+  reply.className = "reply";
   if (!record || !record.state) {
-    bubble.append(el("p", { class: "error", text: errorText(record, status) }));
+    reply.classList.add("single");
+    reply.append(el("div", { class: "main-col" }, el("div", { class: "callout bad" },
+      el("strong", { text: "This request didn't go through" }), el("p", { text: errorText(record, status) }))));
+    setRail(turn, "bad");
+    announce("The request didn't go through.");
     return;
   }
-  bubble.append(statusBadge(record));
-  const used = (record.context || []).length;
-  if (used) bubble.append(el("span", { class: "muted small context-note",
-    text: ` built on ${used} earlier message${used === 1 ? "" : "s"} in this conversation` }));
-  if (record.answer) {
-    bubble.append(groundedAnswer(record.answer, record.request_id));
-  } else {
-    if (record.answer_note) bubble.append(el("p", { class: "muted small", text: `No written answer: ${record.answer_note}` }));
-    const h = highlights(record);
-    if (h) bubble.append(h);
+  const anchor = `ev-${record.request_id}`;
+  const [tone, label] = outcome(record);
+  setRail(turn, tone === "run" ? "run" : tone);
+  announce(`${label}.`);
+  const main = el("div", { class: "main-col" }, stateLine(record));
+
+  if (record.state === "rejected") {
+    const can = canSentence();
+    main.append(el("div", { class: "callout bad" }, el("strong", { text: plainError(record.error) }),
+      el("p", { text: [can || "", "Try rephrasing, or ask about an uploaded file or the web."].filter(Boolean).join(" ") })));
   }
-  // The summary's first line ("Request <id>: <state>.") repeats the badge; keep the rest.
-  const summary = (record.summary || "").replace(/^Request \S+: [a-z_]+\.\n?/, "").trim();
-  if (summary) bubble.append(el("p", { class: "summary", text: summary }));
-  else if (record.error) bubble.append(el("p", { class: "error", text: record.error.message || record.error.code }));
+  const figure = headlineFigure(record, anchor);
+  if (figure) main.append(figure);
+  if (record.answer) {
+    main.append(...groundedAnswer(record.answer, record.request_id));
+  } else {
+    if (record.answer_note) {
+      main.append(el("div", { class: "callout" }, el("strong", { text: "No written answer this time" }),
+        el("p", { text: `The steps finished, but ${plainAnswerNote(record.answer_note.replace(/^the answer could not be written \(([^)]+)\)\.?$/, "$1"))}` })));
+    }
+    const h = highlights(record);
+    if (h) main.append(h);
+  }
+
+  const caveats = [...((record.report && record.report.uncertainty) || []), ...(record.unsupported || []).map((u) => `Not supported by any available tool: ${u}`)];
+  if (caveats.length && record.state !== "rejected") {
+    main.append(el("div", { class: "callout" }, el("strong", { text: "Worth knowing" }), el("ul", {}, ...caveats.map((c) => el("li", { text: c })))));
+  }
 
   const pending = Object.entries(record.pending_approvals || {});
   if (pending.length) {
     let left = pending.length;
-    const cont = el("button", { type: "button", class: "primary", text: "Continue", hidden: "" });
+    const cont = el("button", { type: "button", class: "btn primary", text: "Continue", hidden: "" });
     const decided = () => { if (--left === 0) cont.hidden = false; };
-    for (const [taskId, approvalId] of pending) bubble.append(await approvalCard(record, taskId, approvalId, decided));
+    for (const [taskId, approvalId] of pending) main.append(await approvalCard(record, taskId, approvalId, decided));
     if (!state.me.roles.includes("approver")) cont.hidden = false;
-    cont.addEventListener("click", () => resume(record.request_id, cont));
-    bubble.append(el("div", { class: "approval-continue" }, cont));
+    cont.addEventListener("click", () => resume(record.request_id, cont, turn));
+    main.append(el("div", {}, cont));
   }
-  const s = steps(record);
-  if (s) bubble.append(s);
-  if (record.receipt) bubble.append(receiptLine(record.receipt));
-  if (record.plan && record.report && (record.state === "completed" || record.state === "failed")) {
-    bubble.append(replayControl(record.request_id));
+
+  reply.append(main);
+  if (record.report && (record.report.task_results || []).length) reply.append(el("div", { class: "side-col" }, tracePanel(record)));
+  else {
+    reply.classList.add("single");
+    if (record.receipt) main.append(el("div", { class: "panel" }, receiptBlock(record.receipt)));
   }
 }
 
@@ -394,26 +575,27 @@ const REPLAY_OUTCOME = {
 // "Would this still give the same answer today?" Runs the stored plan again (read and compute
 // steps only, under the user's current permissions) and shows each step's outcome.
 function replayControl(requestId) {
-  const box = el("div", { class: "replay" });
-  const button = el("button", { type: "button", class: "secondary small-btn", text: "Replay",
+  const box = el("div", { class: "receipt" });
+  const button = el("button", { type: "button", class: "btn small", text: "Replay steps",
     title: "Run the same steps again now and compare each result with this one",
     onclick: async () => {
       button.disabled = true;
-      const status = working("Replaying the steps");
+      const status = el("span", { class: "note-line", text: "Replaying the steps…" });
       box.replaceChildren(button, status);
       try {
         const { ok, status: code, data } = await api("POST", `/requests/${encodeURIComponent(requestId)}/replay`);
         status.remove();
-        box.append(ok ? replayResult(data) : el("p", { class: "error small", text: errorText(data, code) }));
+        box.append(ok ? replayResult(data) : el("p", { class: "error note-line", text: errorText(data, code) }));
+        if (ok) announce(data.verdict === "identical" ? "Replay: every step gave the same result." : "Replay finished with differences.");
       } catch (e) {
         status.remove();
-        box.append(el("p", { class: "error small", text: e.message === "unauthorized" ? "Signed out." : "Could not reach the server." }));
+        box.append(el("p", { class: "error note-line", text: e.message === "unauthorized" ? "Signed out." : "Could not reach the server." }));
       } finally {
         button.disabled = false;
         button.textContent = "Replay again";
       }
     } });
-  box.append(button);
+  box.append(el("span", { class: "line", text: "Would this still give the same result today?" }), button);
   return box;
 }
 
@@ -423,17 +605,13 @@ function replayResult(r) {
     differs: "Replayed now: some results changed since the original run.",
     incomplete: "Replayed now: some steps could not run again.",
   }[r.verdict];
-  const out = el("div", { class: "replay-result" }, el("p", { class: "small", text: headline }));
+  const out = el("div", { class: "replay-result" }, el("p", { text: headline }));
   const list = el("ul", { class: "replay-steps" });
   for (const s of r.steps) {
     const [tone, label] = REPLAY_OUTCOME[s.outcome] || ["", s.outcome];
-    const timing = s.original_ms != null && s.replay_ms != null
-      ? `${Math.round(s.original_ms)} → ${Math.round(s.replay_ms)} ms` : "";
+    const timing = s.original_ms != null && s.replay_ms != null ? ` · ${seconds(s.original_ms)} → ${seconds(s.replay_ms)}` : "";
     const detail = [s.note, s.changed && s.changed.length ? `changed: ${s.changed.join(", ")}` : ""].filter(Boolean).join(" · ");
-    list.append(el("li", {},
-      el("span", { class: `status ${tone}`, text: label }), " ",
-      el("span", { class: "step-name", text: s.task_id }), " ",
-      el("span", { class: "muted", text: timing }),
+    list.append(el("li", {}, el("span", { class: `tag ${tone}`, text: label }), el("span", { text: `${s.task_id}${timing}` }),
       detail ? el("span", { class: "note", text: detail }) : null));
   }
   out.append(list);
@@ -442,37 +620,54 @@ function replayResult(r) {
   if (r.receipt_matches_record === false) facts.push("Warning: the original record no longer matches its receipt.");
   else if (r.receipt_matches_record === true) facts.push("The original record still matches its signed receipt.");
   facts.push(r.note);
-  out.append(el("p", { class: "muted small", text: facts.join(" ") }));
+  out.append(el("p", { class: "note-line", text: facts.join(" ") }));
   return out;
 }
 
-// The request's receipt: hashes and ids only, signed when the server has a key. Downloadable for
+// ------------------------------------------------------------------ receipt: copy to clipboard
+
+// The request's receipt: hashes and ids only, signed when the server has a key. Copied as JSON for
 // offline checks with `python -m orchestrator verify-receipt`.
-function receiptLine(r) {
-  const signed = r.signature ? `signed with key ${r.key_id}` : "not signed (no key on this server)";
-  const save = el("button", { type: "button", class: "link small-link", text: "Download receipt",
-    onclick: () => {
-      const blob = new Blob([JSON.stringify(r, null, 2)], { type: "application/json" });
-      const a = el("a", { href: URL.createObjectURL(blob), download: `receipt-${r.request_id}.json` });
-      document.body.append(a);
-      a.click();
-      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-    } });
-  return el("p", { class: "muted small receipt",
-    title: "Proof of what ran: hashes of the plan, every step's arguments and output, the answer and the policy, chained to the previous receipt" },
-    `Receipt #${r.sequence} · ${signed} · `, save);
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* fall through to the selection fallback */ }
+  const area = el("textarea", { class: "sr", "aria-hidden": "true" });
+  area.value = text;
+  document.body.append(area);
+  area.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  area.remove();
+  return ok;
 }
 
-async function resume(requestId, button) {
+function receiptBlock(r) {
+  const signed = r.signature ? `signed with key ${r.key_id}` : "not signed (this server has no signing key)";
+  const done = el("span", { class: "copied", role: "status" });
+  const copy = el("button", { type: "button", class: "btn small", text: "Copy receipt",
+    title: "Copy this receipt as JSON: hashes of the plan, every step's arguments and output, the answer and the policy, chained to the previous receipt",
+    onclick: async () => {
+      const ok = await copyText(JSON.stringify(r, null, 2));
+      done.textContent = ok ? "Copied to clipboard" : "Copy failed; select the receipt from the record instead";
+      done.className = ok ? "copied" : "error note-line";
+      setTimeout(() => { done.textContent = ""; }, 2500);
+    } });
+  return el("div", { class: "receipt" },
+    el("span", { class: "line" }, el("b", { text: `Receipt #${r.sequence}` }), ` · ${signed}`),
+    el("div", { class: "actions" }, copy, done));
+}
+
+async function resume(requestId, button, turn) {
   button.disabled = true;
-  const bubble = addMessage("agent", working("Continuing"));
+  setRail(turn, "run");
+  announce("Continuing.");
   try {
     const { status, data } = await api("POST", `/requests/${encodeURIComponent(requestId)}/resume`);
-    await renderRecord(bubble, data, status);
+    await renderRecord(turn, data, status);
   } catch (e) {
-    bubble.replaceChildren(el("p", { class: "error", text: e.message === "unauthorized" ? "Signed out." : "Could not reach the server." }));
+    turn.reply.replaceChildren(el("div", { class: "callout bad" }, el("p", { text: e.message === "unauthorized" ? "Signed out." : "Could not reach the server." })));
   }
-  bubble.scrollIntoView({ block: "end", behavior: "smooth" });
 }
 
 // ------------------------------------------------------------------ live progress
@@ -526,45 +721,47 @@ async function streamRequest(body, headers, onProgress) {
   throw new Error("stream ended");
 }
 
-const STEP_MARK = { succeeded: "✓", failed: "✗", timed_out: "⏱", denied: "⛔", skipped: "–", cancelled: "–",
-                    awaiting_approval: "⏸" };
-
-function progressView() {
-  const phase = el("span", { class: "phase", text: "Planning" });
-  const clock = el("span", { class: "muted clock" });
-  const steps = el("ol", { class: "steps" });
-  const root = el("div", { class: "progress" }, el("div", { class: "thinking-line" }, phase, " ", clock), steps);
+// The same trace panel, filling in while the request runs; the final record replaces it with the
+// complete one (inputs, outputs, receipt), so the trace never disappears.
+function progressView(turn) {
+  const phase = el("span", { class: "state run", text: "Planning" });
+  const clock = el("span", { class: "sub" });
+  phase.append(clock);
+  const list = el("ol", { class: "trace" });
+  const panel = el("section", { class: "panel", "aria-label": "Steps running" }, el("h3", { text: "Steps" }), list);
+  turn.reply.replaceChildren(el("div", { class: "main-col" }, phase), el("div", { class: "side-col" }, panel));
   let rows = new Map();
   const started = Date.now();
   const timer = setInterval(() => {
     const s = Math.round((Date.now() - started) / 1000);
-    if (s >= 2) clock.textContent = `${s}s`;
+    if (s >= 2) clock.textContent = ` · ${s}s`;
   }, 1000);
+  const setPhase = (text) => { phase.firstChild.textContent = text; announce(text); };
 
   function row(taskId) {
     if (!rows.has(taskId)) {
-      const mark = el("span", { class: "mark", text: "○" });
-      const name = el("span", { class: "step-name", text: taskId });
-      const info = el("span", { class: "muted step-info" });
-      const li = el("li", { class: "pending" }, mark, name, info);
-      steps.append(li);
-      rows.set(taskId, { li, mark, info });
+      const mark = el("span", { class: "mark", text: STEP_MARK.pending });
+      const info = el("span", {});
+      const li = el("li", { class: "pending" }, el("div", { class: "row" }, mark,
+        el("span", { class: "what" }, el("b", { text: humanize(taskId) }), info), el("span", { class: "ms" })));
+      list.append(li);
+      rows.set(taskId, { li, mark, info, ms: li.querySelector(".ms") });
     }
     return rows.get(taskId);
   }
 
   function update(msg) {
     switch (msg.type) {
-      case "planner_retry": phase.textContent = "Planning (asking again: the first plan was unreadable)"; break;
+      case "planner_retry": setPhase("Planning (asking again: the first plan was unreadable)"); break;
       case "planned":
-        phase.textContent = msg.tasks.length ? `Running ${msg.tasks.length} step${msg.tasks.length === 1 ? "" : "s"}` : "Planning";
+        if (msg.tasks.length) setPhase(`Running ${plural(msg.tasks.length, "step")}`);
         msg.tasks.forEach(row);
         break;
       case "executing": msg.tasks.forEach(row); break;
       case "task_started": {
         const r = row(msg.task_id);
-        r.li.className = "running"; r.mark.textContent = "◌";
-        r.info.textContent = msg.tool ? `${msg.tool}.${msg.operation}` : "";
+        r.li.className = "running"; r.mark.textContent = STEP_MARK.running;
+        r.info.textContent = toolWords(msg.tool, msg.operation);
         break;
       }
       case "task_retry":
@@ -574,22 +771,22 @@ function progressView() {
         const r = row(msg.task_id);
         r.li.className = msg.status;
         r.mark.textContent = STEP_MARK[msg.status] || "•";
-        const ms = msg.duration_ms != null ? `${Math.round(msg.duration_ms)} ms` : "";
-        r.info.textContent = [msg.tool, msg.deduplicated ? "reused" : ms, msg.error].filter(Boolean).join(" · ");
+        r.ms.textContent = msg.deduplicated ? "reused" : msg.duration_ms != null ? seconds(msg.duration_ms) : "";
+        if (msg.error) r.info.textContent = msg.error;
         break;
       }
       case "approval_needed": row(msg.task_id).info.textContent = "waiting for approval"; break;
       case "replanning":
-        phase.textContent = `Re-planning after ${msg.failed.join(", ")} failed`;
-        steps.append(el("li", { class: "divider", text: "Revised plan" }));
+        setPhase(`Re-planning after ${msg.failed.join(", ")} failed`);
+        list.append(el("li", { class: "divider", text: "Revised plan" }));
         rows = new Map();
         break;
-      case "answering": phase.textContent = "Writing the answer from the results"; break;
-      case "finished": phase.textContent = "Done"; break;
+      case "answering": setPhase("Writing the answer from the results"); break;
+      case "finished": setPhase("Done"); break;
     }
   }
 
-  return { root, update, stop: () => clearInterval(timer) };
+  return { update, stop: () => clearInterval(timer) };
 }
 
 async function send(text) {
@@ -597,31 +794,31 @@ async function send(text) {
   const files = [...state.attached];
   state.attached = [];
   $("chips").replaceChildren();
-  addMessage("user", text, files.length ? el("div", { class: "files", text: `Files: ${files.join(", ")}` }) : null);
-  const view = progressView();
-  const bubble = addMessage("agent", view.root);
+  const turn = addTurn(text, files);
+  const view = progressView(turn);
   $("send").disabled = true;
   try {
     const context = state.history.slice(-MAX_CONTEXT);
     const { status, data } = await streamRequest(
       { text, files, allow_partial: $("partial").checked, context }, { "Idempotency-Key": newId() },
-      (msg) => { view.update(msg); bubble.scrollIntoView({ block: "end" }); });
+      (msg) => view.update(msg));
     view.stop();
     if (context.length && (status === 404 || status === 409) && !(data && data.state)) {
       // An earlier message can no longer be used (the server restarted without durable state, say).
       state.history = [];
-      bubble.replaceChildren(el("p", { class: "error", text: `${errorText(data, status)} ` +
-        "Earlier messages are no longer available, so this conversation starts fresh: send it again." }));
+      turn.reply.replaceChildren(el("div", { class: "callout bad" }, el("strong", { text: errorText(data, status) }),
+        el("p", { text: "Earlier messages are no longer available, so this conversation starts fresh: send it again." })));
+      setRail(turn, "bad");
       return;
     }
-    await renderRecord(bubble, data, status);
+    await renderRecord(turn, data, status);
     if (data && data.state === "completed" && data.request_id) state.history.push(data.request_id);
   } catch (e) {
-    bubble.replaceChildren(el("p", { class: "error", text: e.message === "unauthorized" ? "Signed out." : "Could not reach the server." }));
+    turn.reply.replaceChildren(el("div", { class: "callout bad" }, el("p", { text: e.message === "unauthorized" ? "Signed out." : "Could not reach the server." })));
+    setRail(turn, "bad");
   } finally {
     view.stop();
     $("send").disabled = false;
-    bubble.scrollIntoView({ block: "end", behavior: "smooth" });
   }
 }
 
@@ -630,9 +827,11 @@ async function send(text) {
 function autosize() {
   const t = $("text");
   t.style.height = "auto";
-  t.style.height = `${t.scrollHeight + 2}px`;
+  t.style.height = `${Math.max(44, t.scrollHeight + 2)}px`;
   t.style.overflowY = t.scrollHeight > 200 ? "auto" : "hidden";
 }
+
+function newConversation() { resetConversation(); $("text").focus(); }
 
 document.addEventListener("DOMContentLoaded", async () => {
   $("signin-form").addEventListener("submit", async (ev) => {
@@ -640,6 +839,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const key = $("key").value.trim();
     const provider = providerOf(key);
     let message = null;
+    $("signin-button").disabled = true;
     if (provider) {
       $("key").value = "";
       message = `That looks like a ${provider} key. It was not sent anywhere. The server already has its own ` +
@@ -648,10 +848,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       message = "That key was not accepted. Use the orchestrator API key issued for your user " +
         "(dev server: config/dev/api-key.txt), not an LLM provider key.";
     }
+    $("signin-button").disabled = false;
     if (message) { $("signin-error").textContent = message; $("signin-error").hidden = false; }
   });
   $("signout").addEventListener("click", () => signOut());
-  $("new-conversation").addEventListener("click", () => { resetConversation(); $("text").focus(); });
+  $("new-conversation").addEventListener("click", newConversation);
+  $("new-conversation-top").addEventListener("click", newConversation);
+  $("attach").addEventListener("click", () => $("file").click());
   $("file").addEventListener("change", (ev) => { for (const f of ev.target.files) attach(f); ev.target.value = ""; });
   $("text").addEventListener("input", autosize);
   $("text").addEventListener("keydown", (ev) => {

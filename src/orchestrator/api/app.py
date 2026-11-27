@@ -107,11 +107,23 @@ _UI_TYPES = {
 }
 _UI_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
-                               "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+                               "img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; "
+                               "frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-cache",
 }
+
+
+# Self-hosted fonts (SIL OFL; licenses beside them). Only these names are served.
+_UI_FONTS = {"public-sans-400.woff2", "public-sans-600.woff2", "public-sans-700.woff2", "barlow-condensed-600.woff2"}
+
+
+def _ui_font(name: str) -> Response:
+    if name not in _UI_FONTS:
+        raise HTTPException(404, "not found")
+    return Response((_UI_DIR / "fonts" / name).read_bytes(), media_type="font/woff2",
+                    headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "public, max-age=31536000, immutable"})
 
 
 def _ui_file(name: str) -> Response:
@@ -277,6 +289,10 @@ def create_app(
     @app.get("/ui", include_in_schema=False)
     async def chat_page() -> Response:
         return _ui_file("chat.html")
+
+    @app.get("/ui/fonts/{name}", include_in_schema=False)
+    async def chat_font(name: str) -> Response:
+        return _ui_font(name)
 
     @app.get("/ui/{name}", include_in_schema=False)
     async def chat_asset(name: str) -> Response:
